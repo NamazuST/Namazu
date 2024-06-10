@@ -169,8 +169,23 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+# Platform IO
 .pioenvs
 .piolibdeps
 .clang_complete
 .gcc-flags.json
 .pio
+
+# Visual Studio Code
+.vscode/*
+Firmware/.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# Local History for Visual Studio Code
+.history/
+
+Firmware/.gitignore
