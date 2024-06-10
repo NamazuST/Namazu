@@ -188,4 +188,8 @@ Firmware/.vscode/*
 # Local History for Visual Studio Code
 .history/
 
+# Ignore the by PlatformIO generated .gitignore file
 Firmware/.gitignore
+
+#Ignore text files (Marv-code)
+*.txt
