@@ -1,0 +1,5 @@
+- Plate/Plate.dxf
+	attachment plate to attach specimens on top of the table
+	
+- Belt tensioner/
+	3D printable assembly to attach and tension the belt on the opposite side of the motor

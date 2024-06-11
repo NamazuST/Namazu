@@ -1,0 +1,5 @@
+- ContactColumn.stl
+	Column with thin middle layer and contact area
+	
+- NotchedBeam.stl
+	Beam with notch to induce damage
