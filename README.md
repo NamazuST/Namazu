@@ -54,7 +54,7 @@ We advice you to not change or touch the firmware software in ``\Firmware\``, un
 
 # Start with a main file
 
-We provided coded examples and implementaions for MATLAB and Python. Once you have your hardware ready and safety precautions were taken, we suggest to start with simple examples.
+We provided coded examples and implementations for MATLAB and Python. Once you have your hardware ready and safety precautions were taken, we suggest to start with simple examples.
 
 ## MATLAB
 
