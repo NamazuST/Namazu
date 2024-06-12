@@ -2,11 +2,11 @@
 
 This repository represents supplementary material to the publication "2024 Grashorn et la. - Namazu: Low-cost tunable shaking table for vibration experiments under generic signals" published in Experimental Techniques. The repository contains software, coded examples, firmware, and CAD files usable for vibrational experiments in the context of dynamic analysis of structures and stochastic dynamics in general.
 
-Updates 10.06.2024
+Updates 12.06.2024
 
 # Preparations
 
-When this readme was written following OS, platforms, and software was used:
+When this readme was written the following OS, platforms, and software were used:
 
 - Windows 10.0.19041.4355 (professional)
 - Microsoft Visual Studio Code 1.90.0 (VSC)
@@ -26,14 +26,14 @@ In Linux the port is displayed differently (e.g. ```/dev/ttyUSB0```), but the de
 Start VSC, locate and navigate to the Firmware folder (``\Firmware\``), start PlatformIO (in VSC), make sure the ESP32 has been located as described above.
 Press build. As indicated by <span style="color:orange"> *1.* </span> in Figure 1 below. Alternatively you can also use the buttons in the top-right corner, see <span style="color:yellow"> *4.* </span> Figure 1.
 
-<img src="Misc/Build-Upload.png" width="800">
+<img src="Images/Build-Upload.png" width="800">
 
 Figure 1: PlatformIO.
 
 
 A successful build should reveal this:
 
-<img src="Misc/Successfulbuild.PNG" width="800">
+<img src="Images/Successfulbuild.PNG" width="800">
 
 Figure 2: Build.
 
@@ -42,7 +42,7 @@ Then upload the build by pressing the upload button (inicated by <span style="co
 
 A successful upload should display this:
 
-<img src="Misc/SuccessfulUpload.PNG" width="800">
+<img src="Images/SuccessfulUpload.PNG" width="800">
 
 Figure 3: Upload.
 
@@ -58,20 +58,30 @@ We provided coded examples and implementations for MATLAB and Python. Once you h
 
 ## MATLAB
 
-For MATLAB, go to ```\MATLAB\MainCreateSimulation.m```.
+For MATLAB, go to ```\MATLAB\MainCreateSimulation.m```. Here check line 179.
 
 Make sure the correct com port is stated. If ran successfully a fixed harmonic with amplitude 1 and frequency 1 is started.
 
-<img src="Misc/matlab_com_port.png" width="800">
+```Matlab
+%% find shaking table controller on the correct COM port, COM port needs to be identified manually
+
+dev = serialport("COM3",921600);
+```
 
 ## Python
 
-For Python, go to ```\Python\main_FixedHarmonic.py```.
+For Python, go to ```\Python\main_FixedHarmonic.py```. There check line 47.
 
 Make sure the correct com port is stated. If ran successfully a fixed harmonic with amplitude 1 and frequency 1 is started.
 
-<img src="Misc/python_com_port.png" width="800">
+```py
+# Set the COM port and baud rate according to your ESP32 configuration
+com_port = 'COM3'  # Change this to your COM port on Windows, e.g., 'COM3'
+baud_rate = 921600  # Change this to match your ESP32 configuration
 
+# Open the serial connection
+ser = serial.Serial(com_port, baud_rate, timeout=1)
+```
 
 ## Disclaimer
 1. Content.
