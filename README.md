@@ -137,7 +137,7 @@ BibTex:
 
 ## Showcase
 
-<img src="Images/namazu_love.PNG" width="800">
+<img src="Images/namazu_love.png" width="800">
 
 Figure 5: Experimental campaign with a Namazu realization, a 3D printed specimen and love
 
