@@ -6,7 +6,7 @@ Updates 17.06.2024
 
 # Namazu architecture (Software & Hardware)
 
-<img src="Images/namazu_architecture.png" width="800">
+<img src="Images/namazu_architecture.PNG" width="800">
 
 Figure 1: Flowchart and design concept of the Namazu framework, from signal generation via the software over the control system to plate motion, as in ["2024 Grashorn et al."](https://doi.org/10.1007/s40799-024-00727-8)
 
