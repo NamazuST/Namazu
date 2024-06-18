@@ -105,7 +105,7 @@ si::Interface::error_t si::Interface::set_rate(char* param) {
            ((double)frac.factor/(double)frac.divisor),_machine.get_timer_interval());
         return OK;
     }
-    Serial.printf("ERR: failed to set rate");
+    Serial.println("ERR: failed to set rate");
     return BUSY;
 }
 
@@ -230,6 +230,14 @@ si::Interface::error_t si::Interface::cmd_info() {
             state = "PREPARING";
             break;
         }
+        case Machine::state_t::CENTERINGDOWN: {
+            state = "CENTERING";
+            break;
+        }
+        case Machine::state_t::CENTERINGUP: {
+            state = "CENTERING";
+            break;
+        }
         case Machine::state_t::FAULT: {
             Machine::fault_t fault = _machine.get_fault();
             state = "FAULT: " + fault;
@@ -260,6 +268,20 @@ si::Interface::error_t si::Interface::cmd_info() {
 
 si::Interface::error_t si::Interface::cmd_center() {
     if (_machine.prepare()) {
+        return OK;
+    }
+    return BUSY;
+}
+
+si::Interface::error_t si::Interface::cmd_move_up() {
+    if (_machine.move_up()) {
+        return OK;
+    }
+    return BUSY;
+}
+
+si::Interface::error_t si::Interface::cmd_move_down() {
+    if (_machine.move_down()) {
         return OK;
     }
     return BUSY;

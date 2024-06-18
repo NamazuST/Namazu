@@ -11,7 +11,6 @@ si::Machine::Machine(Storage& storage)
 }
 
 void si::Machine::init() {
-
     _config = _storage.load_config();
     if (_config.timer_interval == 0) {
         _config.timer_interval = (1000000UL / DEFAULT_RATE);
@@ -20,7 +19,7 @@ void si::Machine::init() {
         _config.rate = {DEFAULT_RATE,1};
     }
     if (_config.spmm.divisor == 0) {
-        _config.spmm = {0,1};
+        _config.spmm = {DEFAULT_SPMM,1};
     }
     if (_config.mode == UNSET) {
         _config.mode = POSITION;
@@ -63,6 +62,8 @@ void si::Machine::init() {
 void si::Machine::start() {
     switch (_state){
     case READY:
+        //timerAttachInterrupt(_cmd_timer, call_next_cmd, true);  -- conflicts with esp32-wroom-32 (no wroom32d)
+        timerAlarmEnable(_cmd_timer);
         _status.cmd_idx = 0;
         _status.pos = 0;
         if (_new_cmd) {
@@ -86,16 +87,23 @@ void si::Machine::start() {
 }
 
 void si::Machine::stop() {
+#if DEBUG
+    Serial.println("DEBUG: triggerd stop");
+#endif
     timerAlarmDisable(_cmd_timer);
-    if (_state == RUNNING) {
-        size_t cmd_idx = 0;
-        _state = READY;
-        xQueueSend(_queue, &cmd_idx, portMAX_DELAY);
+    size_t cmd_idx = 0;
+    xQueueSend(_queue, &cmd_idx, portMAX_DELAY);
+    if (_state == RUNNING || _state == MANUAL) {
+        set_resting_state();
     }
 }
 
 void si::Machine::pause() {
+#if DEBUG
+    Serial.println("DEBUG: triggerd pause");
+#endif
     if (_state == RUNNING) {
+        timerAlarmDisable(_cmd_timer);
         size_t cmd_idx = 0;
         _state = PAUSED;
         xQueueSend(_queue, &cmd_idx, portMAX_DELAY);
@@ -155,22 +163,22 @@ bool si::Machine::add_position(frac_t pos) {
     if (_status.cmd_cnt < (COMMAND_QUEUE_SIZE / 2)) {
         _cmd_queue_0[_status.cmd_cnt++] = mulFrac2Int(pos, _config.spmm);
 #if DEBUG
-        Serial.println("stored into cur_q");
+        Serial.println("DEBUG: cmd stored into cur_q");
 #endif
     } else if (_status.cmd_cnt < COMMAND_QUEUE_SIZE) {
         _cmd_queue_1[(_status.cmd_cnt++) - (COMMAND_QUEUE_SIZE / 2)] = mulFrac2Int(pos, _config.spmm);
 #if DEBUG
-        Serial.println("stored into spare_q");
+        Serial.println("DEBUG: cmd stored into spare_q");
 #endif
     } else {
         size_t segment = _status.cmd_cnt / (COMMAND_QUEUE_SIZE / 2);
         if (segment != _cmd_segment) {
 #if DEBUG
-            Serial.println("new Segment");
+            Serial.println("DEBUG: new cmd segment");
 #endif
             if (_cmd_queue_buf != nullptr) {
 #if DEBUG
-                Serial.println("Found spareQ, write and free mem");
+                Serial.println("DEBUG: found spare_q, write and free mem");
 #endif
                 _storage.write_commands(_cmd_queue_buf, (_cmd_segment * (COMMAND_QUEUE_SIZE / 2)), (_status.cmd_cnt + 1));
                 free(_cmd_queue_buf);
@@ -181,13 +189,13 @@ bool si::Machine::add_position(frac_t pos) {
                 return false;
             }
 #if DEBUG
-            Serial.println("got dyn mem");
+            Serial.println("DEBUG: got dynamic memory for command_q");
 #endif
             _cmd_queue_buf[(_status.cmd_cnt++) - (segment * (COMMAND_QUEUE_SIZE / 2))] = mulFrac2Int(pos, _config.spmm);
             _cmd_segment = segment;
         } else {
 #if DEBUG
-            Serial.println("stored into dyn mem");
+            Serial.println("DEBUG: stored cmd into dynamic memory");
 #endif
             _cmd_queue_buf[(_status.cmd_cnt++) - (segment * (COMMAND_QUEUE_SIZE / 2))] = mulFrac2Int(pos, _config.spmm);
         }
@@ -208,27 +216,49 @@ bool si::Machine::reset() {
         _status.pos = 0;
         _state = IDLE;
         return true;
+    } else if (_state == FAULT) {
+        ESP.restart();
     }
     return false;
 }
 
 bool si::Machine::move_up() {
-    if (_state == RUNNING || _state == FAULT) return false;
+#if DEBUG
+    Serial.println("DEBUG: triggerd move up");
+#endif
+    if (_state != READY && _state != IDLE) return false;
     _state = MANUAL;
-    _frequency = (double)(MOVEMENT_SPEED) * (1000000.0 / (double)_config.timer_interval);
-    ledcWriteTone(PIN_CHANNEL, _frequency);
+    _frequency = (MOVEMENT_SPEED * (double)_config.spmm.factor) / (double)_config.spmm.divisor;
     digitalWrite(PIN_DIR, HIGH != PIN_INVERT_DIR);
+    size_t cmd_idx = 0;
+    xQueueSend(_queue, &cmd_idx, portMAX_DELAY);
     return true;
 }
 
 bool si::Machine::move_down() {
-    if (_state == RUNNING || _state == FAULT) return false;
+#if DEBUG
+    Serial.println("DEBUG: triggerd move down");
+#endif
+    if (_state != READY && _state != IDLE) return false;
     _state = MANUAL;
-    _frequency = (double)(MOVEMENT_SPEED) * (1000000.0 / (double)_config.timer_interval);
-    ledcWriteTone(PIN_CHANNEL, _frequency);
+    _frequency = (MOVEMENT_SPEED * (double)_config.spmm.factor) / (double)_config.spmm.divisor;
     digitalWrite(PIN_DIR, LOW != PIN_INVERT_DIR);
+    size_t cmd_idx = 0;
+    xQueueSend(_queue, &cmd_idx, portMAX_DELAY);
     return true;
 }
+
+void si::Machine::move_stop() {
+#if DEBUG
+    Serial.println("DEBUG: triggerd move stop");
+#endif
+    if (_state != MANUAL) return;
+    timerAlarmDisable(_cmd_timer);
+    size_t cmd_idx = 0;
+    xQueueSend(_queue, &cmd_idx, portMAX_DELAY);
+    set_resting_state();
+}
+
 
 void si::Machine::set_frequence() {
     // TODO: queue-flip, load commands at flip
@@ -242,26 +272,45 @@ void si::Machine::set_frequence() {
 
     while (true) {
         xQueueReceive(_queue, &cmd_idx, portMAX_DELAY);
-        if (_state == RUNNING) {
-            // cmd_queue size is limited in IRAM
-            // therefore, use multible queues and use the first
-            //  while the other is refilled with commands by a task
-            _frequency = (double)(_cur_cmd_queue[cmd_idx] - _status.pos) * (1000000.0 / (double)_config.timer_interval);
-            _status.pos = _cur_cmd_queue[cmd_idx];
-            if (_frequency < -0.1) {
-                _frequency *= -1.0;
-                digitalWrite(PIN_DIR, LOW != PIN_INVERT_DIR);
-            } else if (_frequency < 0.1) {
-                _frequency = 0.0;
-            } else {
-                digitalWrite(PIN_DIR, HIGH != PIN_INVERT_DIR);
+        switch (_state) {
+            case RUNNING: {
+                // cmd_queue size is limited in IRAM
+                // therefore, use multible queues and use the first
+                //  while the other is refilled with commands by a task
+                _frequency = (double)(_cur_cmd_queue[cmd_idx] - _status.pos) * (1000000.0 / (double)_config.timer_interval);
+                _status.pos = _cur_cmd_queue[cmd_idx];
+                if (_frequency < -FREQUENCY_MIN) {
+                    _frequency *= -FREQUENCY_MIN;
+                    digitalWrite(PIN_DIR, LOW != PIN_INVERT_DIR);
+                } else if (_frequency < FREQUENCY_MIN) {
+                    _frequency = 0.0;
+                } else {
+                    digitalWrite(PIN_DIR, HIGH != PIN_INVERT_DIR);
+                }
+                break;
             }
-        } else {
-            _frequency = 0.0;
-            digitalWrite(PIN_EN, LOW != PIN_INVERT_EN);
+            case PREPARING:
+            case PREPARINGDOWN:
+            case PREPARINGUP:
+            case CENTERINGDOWN:
+            case CENTERINGUP:
+            case MANUAL: {
+                if (_frequency < FREQUENCY_MIN) {
+                    _frequency = 0.0;
+                    digitalWrite(PIN_EN, LOW != PIN_INVERT_EN);
+                } else {
+                    digitalWrite(PIN_EN, HIGH != PIN_INVERT_EN);
+                }
+                break;
+            }
+            default: {
+                _frequency = 0.0;
+                digitalWrite(PIN_EN, LOW != PIN_INVERT_EN);
+                break;
+            }
         }
 #if DEBUG
-        Serial.printf("%d : %f - %llu\n",_cur_cmd_queue[cmd_idx], _frequency, _config.timer_interval);
+        Serial.printf("DEBUG: %d : %f - %llu\n",_cur_cmd_queue[cmd_idx], _frequency, _config.timer_interval);
 #endif
         ledcWriteTone(PIN_CHANNEL, _frequency);
     }
@@ -274,15 +323,18 @@ bool si::Machine::prepare() {
         - finds middle position
         - triggers limit_min
      */
+#if DEBUG
+    Serial.println("DEBUG: triggerd center routine");
+#endif
 #if CONFIG_HAS_LIMITS
     if (_state != READY && _state != IDLE) {
         return false;
     }
-    _state = PREPARINGDOWN;
-    _frequency = (double)(MOVEMENT_SPEED) * (1000000.0 / (double)_config.timer_interval);
-    digitalWrite(PIN_EN, HIGH != PIN_INVERT_EN);
+    _state = PREPARING;
+    _frequency = (MOVEMENT_SPEED * (double)_config.spmm.factor) / (double)_config.spmm.divisor;
     digitalWrite(PIN_DIR, LOW != PIN_INVERT_DIR);
-    ledcWriteTone(PIN_CHANNEL, _frequency);
+    size_t cmd_idx = 0;
+    xQueueSend(_queue, &cmd_idx, portMAX_DELAY);
     return true;
 #else
     return false;
@@ -290,35 +342,101 @@ bool si::Machine::prepare() {
 }
 
 void si::Machine::limit_min() {
+#if DEBUG
+    Serial.println("DEBUG: triggerd limit min");
+#endif
 #if CONFIG_HAS_LIMITS
-    if (_state == PREPARINGDOWN) {
-        _state = PREPARINGUP;
-        _ts_low = micros();
-        digitalWrite(PIN_DIR, HIGH != PIN_INVERT_DIR);
-        // drive upwards and trigger limit_max
-    } else {
-        stop();
-        Serial.println("ERR: triggered lower limit switch");
+    switch (_state) {
+        case PREPARING: {
+            _state = PREPARINGUP;
+            digitalWrite(PIN_DIR, HIGH != PIN_INVERT_DIR);
+            _ts_low = micros();
+            break;
+        }
+        case PREPARINGUP: {
+#endif
+#if DEBUG & CONFIG_HAS_LIMITS
+            Serial.println("DEBUG: protected debounce of limit min");
+#endif
+#if CONFIG_HAS_LIMITS
+            break;
+        }
+        case PREPARINGDOWN: {
+            _state = CENTERINGUP;
+            _ts_high = micros();
+            digitalWrite(PIN_DIR, LOW != PIN_INVERT_DIR);
+            _delay_timer = timerBegin(0, 80, true);
+            uint64_t delta_time = ((uint64_t)_ts_high - (uint64_t)_ts_low) / 2;
+            // drive downwards half of the time it took to reach limit_max
+            // should be almost the center
+            timerAttachInterrupt(_delay_timer, &call_centered, true);
+            timerAlarmWrite(_delay_timer, delta_time, false);
+            timerAlarmEnable(_delay_timer);
+            break;
+        }
+        case CENTERINGUP: {
+#endif
+#if DEBUG & CONFIG_HAS_LIMITS
+            Serial.println("DEBUG: protected debounce of limit min");
+#endif
+#if CONFIG_HAS_LIMITS
+            break;
+        }
+        default: {
+            _state = FAULT;
+            stop();
+            Serial.println("ERR: triggered lower limit switch - stopped");
+        }
     }
 #endif
 }
 
 void si::Machine::limit_max() {
+#if DEBUG
+    Serial.println("DEBUG: triggerd limit max");
+#endif
 #if CONFIG_HAS_LIMITS
-    if (_state == PREPARINGUP) {
-        _state = PREPARING;
-        _ts_high = micros();
-        digitalWrite(PIN_DIR, LOW != PIN_INVERT_DIR);
-        uint64_t delta_time = ((uint64_t)_ts_high - (uint64_t)_ts_low) / 2;
-        _delay_timer = timerBegin(0, 80, true);
-        // drive downwards half of the time it took to reach limit_max
-        // should be almost the center
-        timerAttachInterrupt(_delay_timer, &call_centered, true);
-        timerAlarmWrite(_delay_timer, delta_time, true);
-        timerAlarmEnable(_delay_timer);
-    } else {
-        Serial.println("ERR: triggered upper limit switch");
-        stop();
+    switch (_state) {
+        case PREPARINGUP: {
+            _state = CENTERINGDOWN;
+            _ts_high = micros();
+            digitalWrite(PIN_DIR, LOW != PIN_INVERT_DIR);
+            _delay_timer = timerBegin(0, 80, true);
+            uint64_t delta_time = ((uint64_t)_ts_high - (uint64_t)_ts_low) / 2;
+            // drive downwards half of the time it took to reach limit_max
+            // should be almost the center
+            timerAttachInterrupt(_delay_timer, &call_centered, true);
+            timerAlarmWrite(_delay_timer, delta_time, false);
+            timerAlarmEnable(_delay_timer);
+            break;
+        }
+        case CENTERINGDOWN: {
+#endif
+#if DEBUG & CONFIG_HAS_LIMITS
+            Serial.println("DEBUG: protected debounce of limit max");
+#endif
+#if CONFIG_HAS_LIMITS
+            break;
+        }
+        case PREPARING: {
+            _state = PREPARINGDOWN;
+            digitalWrite(PIN_DIR, HIGH != PIN_INVERT_DIR);
+            _ts_low = micros();
+            break;
+        }
+        case PREPARINGDOWN: {
+#endif
+#if DEBUG & CONFIG_HAS_LIMITS
+            Serial.println("DEBUG: protected debounce of limit max");
+#endif
+#if CONFIG_HAS_LIMITS
+            break;
+        }
+        default: {
+            _state = FAULT;
+            stop();
+            Serial.println("ERR: triggered upper limit switch - stopped");
+        }
     }
 #endif
 }
@@ -346,21 +464,28 @@ void IRAM_ATTR si::Machine::next_cmd() {
         int* tmp = _cur_cmd_queue;
         _cur_cmd_queue = _spare_cmd_queue;
         _spare_cmd_queue = tmp;
-        size_t spare_cmd_idx = _status.cmd_idx + (COMMAND_QUEUE_SIZE / 2);
-        xQueueSend(_queue_flip, &spare_cmd_idx, portMAX_DELAY);
+        //size_t spare_cmd_idx = _status.cmd_idx + (COMMAND_QUEUE_SIZE / 2);
     }
-    xQueueSend(_queue, &cmd_idx, portMAX_DELAY);
     if (_status.cmd_idx < _status.cmd_cnt) {
         ++_status.cmd_idx;
     } else {
+        cmd_idx = 0;
         _state = READY;
         timerAlarmDisable(_cmd_timer);
+        //timerDetachInterrupt(_cmd_timer); -- conflicts with esp32-wroom-32 (no wroom32d)
     }
+    xQueueSend(_queue, &cmd_idx, portMAX_DELAY);
 }
 
 void si::Machine::centered() {
-    timerAlarmDisable(_delay_timer);
+#if DEBUG & CONFIG_HAS_LIMITS
+    Serial.println("DEBUG: centering finished");
+#endif
+    set_resting_state();
     stop();
+    timerAlarmDisable(_delay_timer);
+    //timerEnd(_delay_timer);
+    timerDetachInterrupt(_delay_timer);
 }
 
 void IRAM_ATTR si::Machine::call_next_cmd() {
@@ -369,4 +494,11 @@ void IRAM_ATTR si::Machine::call_next_cmd() {
 
 void IRAM_ATTR si::Machine::call_centered() {
     _instance->centered();
+}
+
+void si::Machine::set_resting_state() {
+    if (_status.cmd_cnt > 0)
+        _state = READY;
+    else 
+        _state = IDLE;
 }

@@ -20,6 +20,8 @@ namespace si {
             PREPARINGDOWN,
             PREPARINGUP,
             PREPARING,
+            CENTERINGUP,
+            CENTERINGDOWN,
             FAULT
         } state_t;
 
@@ -54,6 +56,7 @@ namespace si {
         bool reset();
         bool move_up();
         bool move_down();
+        void move_stop();
         bool prepare();
 
         void init();
@@ -95,5 +98,7 @@ namespace si {
         double _frequency = 0.0;
         unsigned long _ts_low = 0;
         unsigned long _ts_high = 0;
+
+        void set_resting_state();
     };
 }

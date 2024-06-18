@@ -15,6 +15,7 @@ IRAM_ATTR void btn_start();
 void start(void *) {
     interface.cmd_start();
     attachInterrupt(PIN_BTN_START,btn_start,FALLING);
+    vTaskDelete( NULL );
 }
 IRAM_ATTR void btn_start() {
     detachInterrupt(PIN_BTN_START);
@@ -33,6 +34,7 @@ IRAM_ATTR void btn_stop();
 void stop(void *) {
     interface.cmd_stop();
     attachInterrupt(PIN_BTN_STOP,btn_stop,FALLING);
+    vTaskDelete( NULL );
 }
 IRAM_ATTR void btn_stop() {
     detachInterrupt(PIN_BTN_STOP);
@@ -51,6 +53,7 @@ IRAM_ATTR void btn_pause();
 void pause(void *) {
     machine.pause();
     attachInterrupt(PIN_BTN_PAUSE,btn_pause,FALLING);
+    vTaskDelete( NULL );
 }
 IRAM_ATTR void btn_pause() {
     detachInterrupt(PIN_BTN_PAUSE);
@@ -64,11 +67,32 @@ IRAM_ATTR void btn_pause() {
     );
 }
 
+/* CENTER - Button */
+IRAM_ATTR void btn_center();
+void center(void *) {
+    interface.cmd_center();
+    attachInterrupt(PIN_BTN_CENTER,btn_center,FALLING);
+    vTaskDelete( NULL );
+}
+IRAM_ATTR void btn_center() {
+    detachInterrupt(PIN_BTN_CENTER);
+    xTaskCreate(
+        center,              /* Task function. */
+        "BtnCenter",         /* String with name of task. */
+        4096,               /* Stack size in bytes. */
+        NULL,               /* Parameter passed as input of the task */
+        0,                  /* Priority of the task. */
+        NULL
+    );
+}
+
 /* UP - Button */
 IRAM_ATTR void btn_up_rise();
+IRAM_ATTR void btn_up_fall();
 void up_rise(void *) {
-    machine.stop();
-    attachInterrupt(PIN_BTN_UP,btn_up_rise,FALLING);
+    machine.move_stop();
+    attachInterrupt(PIN_BTN_UP,btn_up_fall,FALLING);
+    vTaskDelete( NULL );
 }
 IRAM_ATTR void btn_up_rise() {
     detachInterrupt(PIN_BTN_UP);
@@ -81,10 +105,10 @@ IRAM_ATTR void btn_up_rise() {
         NULL
     );
 }
-IRAM_ATTR void btn_up_fall();
 void up_fall(void *) {
     machine.move_up();
     attachInterrupt(PIN_BTN_UP,btn_up_rise,RISING);
+    vTaskDelete( NULL );
 }
 IRAM_ATTR void btn_up_fall() {
     detachInterrupt(PIN_BTN_UP);
@@ -100,9 +124,11 @@ IRAM_ATTR void btn_up_fall() {
 
 /* DOWN - Button */
 IRAM_ATTR void btn_down_rise();
+IRAM_ATTR void btn_down_fall();
 void down_rise(void *) {
-    machine.stop();
-    attachInterrupt(PIN_BTN_DOWN,btn_down_rise,FALLING);
+    machine.move_stop();
+    attachInterrupt(PIN_BTN_DOWN,btn_down_fall,FALLING);
+    vTaskDelete( NULL );
 }
 IRAM_ATTR void btn_down_rise() {
     detachInterrupt(PIN_BTN_DOWN);
@@ -115,10 +141,10 @@ IRAM_ATTR void btn_down_rise() {
         NULL
     );
 }
-IRAM_ATTR void btn_down_fall();
 void down_fall(void *) {
     machine.move_down();
     attachInterrupt(PIN_BTN_DOWN,btn_down_rise,RISING);
+    vTaskDelete( NULL );
 }
 IRAM_ATTR void btn_down_fall() {
     detachInterrupt(PIN_BTN_DOWN);
@@ -139,6 +165,7 @@ IRAM_ATTR void limit_min();
 void min(void *) {
     machine.limit_min();
     attachInterrupt(PIN_LIMIT_MIN,limit_min,FALLING);
+    vTaskDelete( NULL );
 }
 IRAM_ATTR void limit_min() {
     detachInterrupt(PIN_LIMIT_MIN);
@@ -157,6 +184,7 @@ IRAM_ATTR void limit_max();
 void max(void *) {
     machine.limit_max();
     attachInterrupt(PIN_LIMIT_MAX,limit_max,FALLING);
+    vTaskDelete( NULL );
 }
 IRAM_ATTR void limit_max() {
     detachInterrupt(PIN_LIMIT_MAX);
@@ -179,6 +207,24 @@ void setup() {
         Serial.println("FAILED TO INITALIZE STORAGE");
     }
 #if CONFIG_HAS_LIMITS
+    bool precheck = false;
+    pinMode(PIN_LIMIT_MIN, INPUT);
+    pinMode(PIN_LIMIT_MAX, INPUT);
+    while (!precheck) {
+        if (!digitalRead(PIN_LIMIT_MIN)) {
+            Serial.println("ERR: LIMIT_MIN is HIGH - unsafe state - halting");
+            sleep(5);
+            continue;
+        } else {
+            precheck = true;
+        }
+        if (!digitalRead(PIN_LIMIT_MAX)) {
+            Serial.println("ERR: LIMIT_MAX is HIGH - unsafe state - halting");
+            precheck = false;
+            sleep(5);
+        }
+    }
+
     attachInterrupt(PIN_LIMIT_MIN,limit_min,FALLING);
     attachInterrupt(PIN_LIMIT_MAX,limit_max,FALLING);
 #endif
@@ -189,6 +235,10 @@ void setup() {
     attachInterrupt(PIN_BTN_UP,btn_up_fall,FALLING);
     attachInterrupt(PIN_BTN_DOWN,btn_down_fall,FALLING);
 #endif
+#if CONFIG_HAS_BUTTONS & CONFIG_HAS_LIMITS
+    attachInterrupt(PIN_BTN_CENTER,btn_center,FALLING);
+#endif
+
 
 }
 

@@ -24,12 +24,15 @@ namespace si {
         void loop();
         int parse_cmd(size_t);
         error_t cmd_start();
+        error_t cmd_pause();
         error_t cmd_stop();
         error_t cmd_set(char*);
         error_t cmd_add(char*);
         error_t cmd_reset();
         error_t cmd_info();
         error_t cmd_center();
+        error_t cmd_move_up();
+        error_t cmd_move_down();
 
         private:
         error_t set_rate(char*);
