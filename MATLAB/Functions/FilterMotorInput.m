@@ -50,6 +50,8 @@ switch usedMethod
         
         %shakingData input signal is filtered
         shakingData.signalFiltered = true;
+
+    case MethodEnum.Impact
         
     otherwise
         

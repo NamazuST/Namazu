@@ -130,6 +130,23 @@ switch usedMethod
         currentSimulationData.motorRate = stepsPerSecond;
         currentSimulationData.signalGenerator = usedMethod;
         methodName = 'ImportSignal';
+    case MethodEnum.FrequencySweep
+        % frequency sweep from 0 Hz to some upper limit, input: omegaMax,
+        % maxT
+        maxF = 10; % maximum Frequency [Hz]
+        maxA = 0.5; % maximum Amplitude [mm]
+        [pos,t,name] = SimulateFrequencySweep(maxF*2*pi,maxA,maxT,'nStepsPerSecond',stepsPerSecond);
+        currentSimulationData.inputSignal = [t',pos'];
+        currentSimulationData.motorRate = stepsPerSecond;
+        methodName = 'FrequencySweep';
+    case MethodEnum.Impact
+        % simulate impact, inputs: impact time [s], max displacement [mm]
+        impactTime = .1; % time of impact [s]
+        maxD = 15; % impact amplitude [mm]
+        [pos,t,name] = SimulateImpact(maxD,impactTime,'nStepsPerSecond',stepsPerSecond);
+        currentSimulationData.inputSignal = [t',pos'];
+        currentSimulationData.motorRate = stepsPerSecond;
+        methodName = 'Impact';
     otherwise
         error('Method not implemented!');
 end
@@ -140,7 +157,7 @@ fprintf(['Starting experiment for a ', methodName, '.\n'])
 
 %String for filename including timecode
 fName = [rootpath 'MarvCode' delimiter ...
-    char(datetime('now','Format','yMMd_HHmmss_SSS')) '_' ...
+    char(datetime('now','Format','yMMdd_HHmmss_SSS')) '_' ...
     methodName, '_', name, '.mat'];
 
 % Set the used method to generate the input signal
@@ -195,8 +212,6 @@ SendDataToMotor(currentSimulationData,dev);
 if ~strcmp(input("Continue with starting the experiment? y/n\n",'s'),'y')
     error("Aborted");
 end
-
-% error("NOT IMPLEMENTED");
 
 % Main function to start the experiment
 currentSimulationData = StartExperiment(currentSimulationData,dev);
