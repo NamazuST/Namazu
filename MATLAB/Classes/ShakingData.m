@@ -22,7 +22,6 @@ classdef ShakingData
         inputAcceleration (:,2) double, % vector [time,amplitude] for simulated acceleration (interpolated from position)
         marvCode string; % generated marv-code
         signalFiltered logical; % Is the signal filtered or zero padded
-        simulationType % TODO: Find out how to do enumerates so we can use one here to indicate the used method (Shinozuka, fixed Harmonic etc.)
         fileName string; % file name and location to save the accumulated data
         signalGenerator MethodEnum; %Which method to generate a pos signal was used?
         psdFunc function_handle; %If Shinozuka(SRM) was used with a custom PSD, this is the place to find it later.

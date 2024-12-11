@@ -1,29 +1,4 @@
-clc; clear;
-%Starting
-fprintf('[%s]: ', datetime("now"))
-fprintf('Starting %s. \n ',mfilename)
-
-%% Path Dependencies
-% Root Path
-delimiter = filesep;
-rootpath    = [pwd filesep];
-addpath(genpath([rootpath 'Methods' filesep])); % Signal generating methods
-addpath(genpath([rootpath 'Functions' filesep])); % MATLAB functions
-addpath(genpath([rootpath 'Classes' filesep])); % MATLAB classes
-
-%Set default plot text interpreter to latex
-set(0,'defaulttextinterpreter','latex')
-set(0,'defaultAxesFontSize',12)
-
-%% Initialization of the setup
-currentSimulationData = ShakingData();
-
-t = []; % time vector
-pos = []; % position vector
-
-%Are the acceleration sensors operating?
-currentSimulationData.accelerationSensorsActive = false;
-
+rootpath = InitialSetup();
 %% Choice of method
 
 % Numbering and identification List
@@ -110,7 +85,6 @@ switch usedMethod
         maxT = t(end);
         currentSimulationData.inputSignal = [t,pos];
         currentSimulationData.motorRate = stepsPerSecond;
-        currentSimulationData.signalGenerator = usedMethod;
         methodName = 'Earthquake';
     case MethodEnum.ImportSignal
         %name of the file to load
@@ -128,7 +102,6 @@ switch usedMethod
         % and pos: [1xn_pos_vector]
         currentSimulationData.inputSignal = [t', chosen_signal];
         currentSimulationData.motorRate = stepsPerSecond;
-        currentSimulationData.signalGenerator = usedMethod;
         methodName = 'ImportSignal';
     case MethodEnum.FrequencySweep
         % frequency sweep from 0 Hz to some upper limit, input: omegaMax,
@@ -156,12 +129,12 @@ fprintf(['Starting experiment for a ', methodName, '.\n'])
 %% Marvcode generation
 
 %String for filename including timecode
-fName = [rootpath 'MarvCode' delimiter ...
+fName = [rootpath 'MarvCode' filesep ...
     char(datetime('now','Format','yMMdd_HHmmss_SSS')) '_' ...
     methodName, '_', name, '.mat'];
 
 % Set the used method to generate the input signal
-currentSimulationData.simulationType = usedMethod;
+currentSimulationData.signalGenerator = usedMethod;
 
 % Set the name for this particular experiment
 currentSimulationData.fileName = fName;
@@ -193,7 +166,7 @@ fprintf("Max Amplitude: %3.2f [mm], max velocity: %3.2f [mm/s], max acceleration
 
 %% find shaking table controller on the correct COM port, COM port needs to be identified manually
 
-dev = serialport("COM3",921600);
+dev = serialport("/dev/ttyUSB0",921600);
 pause(0.1)
 dev.flush
 fprintf(['Number of Bytes available: ', num2str(dev.NumBytesAvailable), '.\n'])

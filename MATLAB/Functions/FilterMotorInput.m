@@ -21,7 +21,7 @@ if ~exist("tDown",'var')
 end
 
 %Identify used method
-usedMethod = shakingData.simulationType;
+usedMethod = shakingData.signalGenerator;
 
 %For now only an exception is made regarding the Shinozuka benchmark
 %example

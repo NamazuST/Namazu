@@ -191,5 +191,6 @@ Firmware/.vscode/*
 # Ignore the by PlatformIO generated .gitignore file
 Firmware/.gitignore
 
-#Ignore text files (Marv-code)
+#Ignore text files and generated signals (Marv-code and .mat-files)
 *.txt
+*.mat
