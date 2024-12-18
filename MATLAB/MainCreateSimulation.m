@@ -8,12 +8,16 @@ rootpath = InitialSetup();
 % settings.method.RandomHarmonic = 3;
 % settings.method.EarthquakeRecord = 4;
 
-usedMethod = MethodEnum.FixedHarmonic;
-
 %These options are fixed for some cases, e.g. ShinozukaBenchmark
 stepsPerSecond = 100;
 maxT = 10;
 filterLength = 3;
+stepsPerMM = 1600/40; % IMPORTANT SETTING, DON'T FORGET
+
+simulation = FixedHarmonic(stepsPerSecond,maxT);
+simulation = simulation.Setup();
+
+shakingData = ShakingData(simulation,stepsPerMM);
 
 switch usedMethod
     case MethodEnum.Shinozuka

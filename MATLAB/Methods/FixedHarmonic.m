@@ -11,8 +11,8 @@ classdef FixedHarmonic < SimulationMethod
     end
     
     methods
-        function obj = FixedHarmonic(dt,T_max)
-            obj@SimulationMethod(dt,T_max); % call base constructor
+        function obj = FixedHarmonic(nStepsPerSecond,T_max)
+            obj@SimulationMethod(nStepsPerSecond,T_max); % call base constructor
             obj.name = "FixedHarmonic";
         end
         

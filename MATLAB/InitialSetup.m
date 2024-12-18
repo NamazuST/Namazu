@@ -11,16 +11,8 @@ function [rootpath] = InitialSetup()
     addpath(genpath([rootpath 'Classes' filesep])); % MATLAB classes
     
     %Set default plot text interpreter to latex
-    set(0,'defaulttextinterpreter','latex')
-    set(0,'defaultAxesFontSize',12)
+    % set(0,'defaulttextinterpreter','latex')
+    % set(0,'defaultAxesFontSize',12)
     
-    %% Initialization of the setup
-    currentSimulationData = ShakingData();
-    
-    t = []; % time vector
-    pos = []; % position vector
-    
-    %Are the acceleration sensors operating?
-    currentSimulationData.accelerationSensorsActive = false;
 end
 
