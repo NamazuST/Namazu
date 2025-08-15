@@ -1,6 +1,9 @@
 # Windows default autosave extension
 *.asv
 
+# We do not want to store all the .mat files and the MarvCode
+MATLAB/MarvCode/
+
 # OSX / *nix default autosave extension
 *.m~
 

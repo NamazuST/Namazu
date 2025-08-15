@@ -4,7 +4,9 @@
 SendInstructionToUSB(dev,'reset')
 dev.flush
 SendInstructionToUSB(dev,'info')
-SendInstructionToUSB(dev,'set spmm 29.6296')
+stepsPerMM = 1600/20;
+spmmcommand = sprintf('set spmm %5.4f',stepsPerMM);
+SendInstructionToUSB(dev,spmmcommand)
 SendInstructionToUSB(dev,'info')
 SendInstructionToUSB(dev,'set rate 1')
 SendInstructionToUSB(dev,'info')
