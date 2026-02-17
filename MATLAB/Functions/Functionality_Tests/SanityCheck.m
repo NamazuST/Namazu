@@ -4,7 +4,8 @@
 SendInstructionToUSB(dev,'reset')
 dev.flush
 SendInstructionToUSB(dev,'info')
-stepsPerMM = 1600/20;
+stepsPerMM = 1600/54; %Mk2
+%stepsPerMM = 1600/20; %Mk3
 spmmcommand = sprintf('set spmm %5.4f',stepsPerMM);
 SendInstructionToUSB(dev,spmmcommand)
 SendInstructionToUSB(dev,'info')
