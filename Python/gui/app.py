@@ -24,6 +24,7 @@ class NamazuShakeTableApp(tk.Tk):
     def on_close(self):
         try:
             plt.close("all")
+            self.fixedHarmonic.ser.close()
         except:
             pass
 
@@ -125,6 +126,7 @@ class NamazuShakeTableApp(tk.Tk):
         # ttk.Label(rate_frame, text="steps").pack(side=tk.LEFT)
 
         ttk.Button(signal_frame, text="Send Signal", command=self.send_signal).pack(pady=5, padx=5, fill=tk.X)
+        ttk.Button(signal_frame, text="Start Motor", command=self.start_motor).pack(pady=5, padx=5, fill=tk.X)
 
         # Plot display area
 
@@ -134,30 +136,32 @@ class NamazuShakeTableApp(tk.Tk):
         self.widget.pack(padx=10, pady=10)
 
     def display_input_signal(self):
-        fixedHarmonic = FixedHarmonic(
+        self.fixedHarmonic = FixedHarmonic(
             float(self.num_steps.get()), 
             float(self.max_times.get())
             )
-        [pos_out, t_out, shaking_data_instance] = fixedHarmonic.simulate_input_signal()
+        [self.pos_out, self.t_out, self.shaking_data_instance] = self.fixedHarmonic.simulate_input_signal()
         self.ax.clear()
-        self.ax.plot(t_out, pos_out)
+        self.ax.plot(self.t_out, self.pos_out)
         self.ax.set_xlabel("time in [s]")
         self.ax.set_ylabel("x in [mm]")
-        self.ax.set_title(shaking_data_instance.fileName)
+        self.ax.set_title(self.shaking_data_instance.fileName)
         self.canvas.draw()
 
     def write_marv_code(self):
-        fixedHarmonic = FixedHarmonic(
-            float(self.num_steps.get()), 
-            float(self.max_times.get())
-            )
-        fixedHarmonic.write_marv_code()
+        self.fixedHarmonic.write_marv_code()
 
     def send_signal(self):
-        fixedHarmonic = FixedHarmonic(
-            stepsPerSecond = float(self.num_steps.get()), 
-            maxT =float(self.max_times.get()),
-            com_port = self.port.get(), 
-            baud_rate = int(self.baud_rate.get())
-            )
-        fixedHarmonic.send_signal()
+        # fixedHarmonic = FixedHarmonic(
+        #     stepsPerSecond = float(self.num_steps.get()), 
+        #     maxT =float(self.max_times.get()),
+        #     com_port = self.port.get(), 
+        #     baud_rate = int(self.baud_rate.get())
+        #     )
+        self.fixedHarmonic.com_port = self.port.get()
+        self.fixedHarmonic.baud_rate = self.baud_rate.get()
+
+        self.fixedHarmonic.send_signal(self.t_out)
+
+    def start_motor(self):
+        self.fixedHarmonic.start_motor()

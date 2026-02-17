@@ -38,11 +38,11 @@ class FixedHarmonic():
         return pos_out, t_out, self.shaking_data_instance
 
     def write_marv_code(self):
-        pos_out, t_out, self.shaking_data_instance = self.simulate_input_signal()
-        self.shaking_data_instance.inputSignal = [t_out, pos_out]
+        self.pos_out, self.t_out, self.shaking_data_instance = self.simulate_input_signal()
+        self.shaking_data_instance.inputSignal = [self.t_out, self.pos_out]
         self.shaking_data_instance = WriteMarvCode.WriteMarvCode(self.shaking_data_instance)
 
-    def send_signal(self):
+    def send_signal(self, t_out):
         print("Sending singal now!")
         #This needs to be send to the ESP32
         # import serial # pyserial is required
@@ -54,30 +54,42 @@ class FixedHarmonic():
 
         try:
             # Open the serial connection
-            ser = serial.Serial(self.com_port, self.baud_rate, timeout=1)
+            self.ser = serial.Serial(self.com_port, self.baud_rate, timeout=1)
             # Flush any existing data in the input buffer
-            ser.flushInput()
+            time.sleep(2)
+            self.ser.flushInput()
         except:
             print("Not able to open the connection!")
             return
 
         try:
             # Send the marvCode (displacement history) to ESP32
-            SendCode2Motor.SendMarvCode2Motor(ser, self.shaking_data_instance)
+            SendCode2Motor.SendMarvCode2Motor(self.ser, self.shaking_data_instance)
 
-            prompt_response = input("To continue, press 'y': ")
-            if prompt_response.lower() == 'y':
-                print("Continuing...")
-                # Start the motor
-                SendCode2Motor.SendCmd2Motor(ser, 'start')
-                time.sleep(t_out[-1]+5)  # Wait for T+5 seconds
-            else:
-                print("Not continuing.")
+            # prompt_response = input("To continue, press 'y': ")
+            # if prompt_response.lower() == 'y':
+            #     print("Continuing...")
+            #     # Start the motor
+            #     SendCode2Motor.SendCmd2Motor(ser, 'start')
+            #     time.sleep(t_out[-1]+5)  # Wait for T+5 seconds
+            # else:
+            #     print("Not continuing.")
+        except:
+            print("Device not available")
+            return
+
+        
+
+    def start_motor(self):
+        try:
+            # Start the motor
+            SendCode2Motor.SendCmd2Motor(self.ser, 'start')
+            time.sleep(self.t_out[-1]+5)  # Wait for T+5 seconds
         except:
             print("Device not available")
             return
 
         # Close port
         print("Shaking finished. Closing port...")
-        ser.close()
+        self.ser.close()
         print("Port closed.")
