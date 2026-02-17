@@ -5,7 +5,8 @@ function [shakingData] = WriteMarvCode(shakingData)
     % Calculation for steps per mm, i.e. microstep setting divided by
     % table's movement per revolution
     % driver is set to 1600 steps per mm, current table has 54 mm/rev:
-    stepsPerMM = 1600/54; % specific for the motor, CHANGE IF TABLE OR MICROSTEPPING IS CHANGED
+    % stepsPerMM = 1600/54; % specific for the motor, CHANGE IF TABLE OR MICROSTEPPING IS CHANGED
+    stepsPerMM = 1600/20; %This is the setting used for the ballscrew Mk3 version, needs to be checked though.
     % on NEMA 23 (1.8° per step)
     
     form = 'add %5.4f\n';

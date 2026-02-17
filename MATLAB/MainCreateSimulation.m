@@ -94,7 +94,7 @@ switch usedMethod
         % Fibonacci
         %        [pos,t,name] = SimulateFixedHarmonic([1.6,4.1,6.6],[1,2,1],maxT,'nStepsPerSecond',stepsPerSecond);
 
-        [pos,t,name] = SimulateFixedHarmonic(1,1,maxT,'nStepsPerSecond',stepsPerSecond);
+        [pos,t,name] = SimulateFixedHarmonic(1,10,maxT,'nStepsPerSecond',stepsPerSecond);
         currentSimulationData.inputSignal = [t',pos'];
         currentSimulationData.motorRate = stepsPerSecond;
         methodName = 'HarmonicSignal';
@@ -193,7 +193,7 @@ fprintf("Max Amplitude: %3.2f [mm], max velocity: %3.2f [mm/s], max acceleration
 
 %% find shaking table controller on the correct COM port, COM port needs to be identified manually
 
-dev = serialport("COM3",921600);
+dev = serialport("COM4",921600);
 pause(0.1)
 dev.flush
 fprintf(['Number of Bytes available: ', num2str(dev.NumBytesAvailable), '.\n'])
