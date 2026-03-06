@@ -45,15 +45,18 @@ import serial # pyserial is required
 import time
 
 # Set the COM port and baud rate according to your ESP32 configuration
-com_port = 'COM3'  # Change this to your COM port on Windows, e.g., 'COM3'
+com_port = 'COM5'  # Change this to your COM port on Windows, e.g., 'COM3'
 baud_rate = 921600  # Change this to match your ESP32 configuration
 
 # Open the serial connection
+print(f"Opening serial port {com_port} at baud rate {baud_rate}...")
 ser = serial.Serial(com_port, baud_rate, timeout=1)
 # Flush any existing data in the input buffer
+print("Flushing input buffer...")
 ser.flushInput()
 
 # Send the marvCode (displacement history) to ESP32
+print("Sending marvCode to motor...")
 SendCode2Motor.SendMarvCode2Motor(ser, shaking_data_instance)
 
 prompt_response = input("To continue, press 'y': ")

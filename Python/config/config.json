@@ -1,0 +1,7 @@
+{
+    "motorStartupDelay": 5.0,
+    "motionStartupDelay": 5.0,
+    "sampleRate": 100.0,
+    "motorRate": 100.0,
+    "steps_per_mm": 27.0
+}
