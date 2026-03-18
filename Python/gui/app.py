@@ -6,6 +6,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import sys
 
 from main_FixedHarmonic import FixedHarmonic
+from main_KanaiTajimiSignal import KanaiTajimiSignal
+from main_ShinozukaBenchmark import ShnozukaBenchmark
 
 
 class NamazuShakeTableApp(tk.Tk):
@@ -17,6 +19,8 @@ class NamazuShakeTableApp(tk.Tk):
         self.image = None
         self.tk_image = None
         self.last_result = None
+
+        self.input_class = FixedHarmonic(100, 5)
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -74,10 +78,11 @@ class NamazuShakeTableApp(tk.Tk):
         self.method_dropdown = ttk.Combobox(
             method_selection_frame,
             textvariable=self.input_method,
-            values=["Fixed Harmonic", "Shinozuka Benchmark", "Shinozuka", "PSD"],
+            values=["Fixed Harmonic", "Kanai Tazimi", "Shinozuka Benchmark", "Shinozuka", "PSD"],
             state="readonly",
             width=20
         )
+        self.method_dropdown.bind("<<ComboboxSelected>>", self.on_select)
         self.method_dropdown.pack(side=tk.LEFT, padx=5)
 
         # Number of Steps
@@ -135,33 +140,81 @@ class NamazuShakeTableApp(tk.Tk):
         self.widget = self.canvas.get_tk_widget()
         self.widget.pack(padx=10, pady=10)
 
+        # Status Area
+        status_frame = ttk.LabelFrame(control_frame, text="Status")
+        status_frame.pack(anchor="w", pady=5, padx=2, fill=tk.X)
+
+        self.status_var = tk.StringVar()
+        status_label = ttk.Label(status_frame, textvariable=self.status_var, 
+                                 wraplength=350, justify='left', anchor='nw', 
+                                 foreground='blue')
+
+        # def update_wrap(event):
+        #     # wraplength is in pixels; subtract padding so it doesn't touch edges
+        #     wrap = max(200, event.width - 20)
+        #     status_label.configure(wraplength=wrap)
+        
+        # status_label.bind('<Configure>', update_wrap)
+        status_label.pack(fill=tk.X)
+
+    def on_select(self, event):
+        # "Fixed Harmonic", "Shinozuka Benchmark", "Shinozuka", "PSD"
+        match self.input_method.get():
+            case "Fixed Harmonic":
+                self.input_class = FixedHarmonic(
+                    stepsPerSecond=float(self.num_steps.get()),
+                    maxT=float(self.max_times.get())
+                    )
+            case "Shinozuka Benchmark":
+                self.input_class = ShnozukaBenchmark(amplitude_scaling=3)
+            case "Kanai Tazimi":
+                self.input_class = KanaiTajimiSignal(
+                    stepsPerSecond=float(self.num_steps.get()),
+                    maxT=float(self.max_times.get()),
+                    maxF=12,
+                    nOmega=50
+                )
+            case "Shinozuka":
+                pass
+            case "PSD":
+                pass
+                
     def display_input_signal(self):
-        self.fixedHarmonic = FixedHarmonic(
-            float(self.num_steps.get()), 
-            float(self.max_times.get())
-            )
-        [self.pos_out, self.t_out, self.shaking_data_instance] = self.fixedHarmonic.simulate_input_signal()
+        # self.input_class = FixedHarmonic(
+        #     float(self.num_steps.get()), 
+        #     float(self.max_times.get())
+        #     )
+        [self.pos_out, self.t_out, self.shaking_data_instance] = self.input_class.simulate_input_signal()
         self.ax.clear()
         self.ax.plot(self.t_out, self.pos_out)
         self.ax.set_xlabel("time in [s]")
         self.ax.set_ylabel("x in [mm]")
         self.ax.set_title(self.shaking_data_instance.fileName)
         self.canvas.draw()
+        self.update_status("Data has been initialised!")
 
     def write_marv_code(self):
-        self.fixedHarmonic.write_marv_code()
+        if hasattr(self.input_class, 'write_marv_code'):
+            self.input_class.write_marv_code()
+            self.update_status(f"Marv code has been successfully written to {self.shaking_data_instance.fileName}")
+        else:
+            self.update_status("Data not yet initialised.")
 
     def send_signal(self):
-        # fixedHarmonic = FixedHarmonic(
-        #     stepsPerSecond = float(self.num_steps.get()), 
-        #     maxT =float(self.max_times.get()),
-        #     com_port = self.port.get(), 
-        #     baud_rate = int(self.baud_rate.get())
-        #     )
-        self.fixedHarmonic.com_port = self.port.get()
-        self.fixedHarmonic.baud_rate = self.baud_rate.get()
-
-        self.fixedHarmonic.send_signal(self.t_out)
+        if hasattr(self.input_class, 'send_signal'):
+            self.input_class.com_port = self.port.get()
+            self.input_class.baud_rate = self.baud_rate.get() 
+            self.input_class.send_signal(self)
+            # self.update_status("Data sent!")
+        else:
+            self.update_status("Data not yet initialised.")
 
     def start_motor(self):
-        self.fixedHarmonic.start_motor()
+        if hasattr(self.input_class, 'start_motor'):
+            self.input_class.start_motor(self)
+            # self.update_status("Shaking Finished")
+        else:
+            self.update_status("Data not yet initialised.")
+
+    def update_status(self, text):
+        self.status_var.set(f'{self.status_var.get()}\n{text}\n{25*"-"}')

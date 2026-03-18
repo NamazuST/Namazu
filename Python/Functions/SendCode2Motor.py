@@ -6,7 +6,6 @@
 def SendMarvCode2Motor(serial_device, shaking_data):
     #split char into lines and store them in an array
     cmd_array = shaking_data.marvCode.split('\n')
-    print(shaking_data.marvCode)
     #remove whitespaces
     cmd_array = [item.strip() for item in cmd_array]
 

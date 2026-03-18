@@ -42,8 +42,7 @@ class FixedHarmonic():
         self.shaking_data_instance.inputSignal = [self.t_out, self.pos_out]
         self.shaking_data_instance = WriteMarvCode.WriteMarvCode(self.shaking_data_instance)
 
-    def send_signal(self, t_out):
-        print("Sending singal now!")
+    def send_signal(self, app):
         #This needs to be send to the ESP32
         # import serial # pyserial is required
         # import time
@@ -60,36 +59,30 @@ class FixedHarmonic():
             self.ser.flushInput()
         except:
             print("Not able to open the connection!")
+            app.update_status("Device not available !")
             return
 
         try:
             # Send the marvCode (displacement history) to ESP32
+            print("Sending singal now")
             SendCode2Motor.SendMarvCode2Motor(self.ser, self.shaking_data_instance)
-
-            # prompt_response = input("To continue, press 'y': ")
-            # if prompt_response.lower() == 'y':
-            #     print("Continuing...")
-            #     # Start the motor
-            #     SendCode2Motor.SendCmd2Motor(ser, 'start')
-            #     time.sleep(t_out[-1]+5)  # Wait for T+5 seconds
-            # else:
-            #     print("Not continuing.")
+            app.update_status("Data sent")
         except:
             print("Device not available")
+            app.update_status("Device not available !")
             return
 
-        
-
-    def start_motor(self):
+    def start_motor(self, app):
         try:
             # Start the motor
+            print("Starting Motor")
             SendCode2Motor.SendCmd2Motor(self.ser, 'start')
-            time.sleep(self.t_out[-1]+5)  # Wait for T+5 seconds
+            time.sleep(self.t_out[-1])  # Wait for T seconds
+            app.update_status("Shaking finished.")
         except:
             print("Device not available")
+            app.update_status("Device not available !")
             return
 
-        # Close port
-        print("Shaking finished. Closing port...")
-        self.ser.close()
-        print("Port closed.")
+
+

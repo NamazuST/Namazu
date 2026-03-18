@@ -20,7 +20,9 @@ SendCmd2Motor(ser, 'info')
 SendCmd2Motor(ser, 'reset')
 SendCmd2Motor(ser, 'set spmm 27')
 SendCmd2Motor(ser, 'set rate 100')
-SendCmd2Motor(ser, 'add -20')
+for i in range(500):
+    SendCmd2Motor(ser, 'add 20')
+
 SendCmd2Motor(ser, 'start')
 
 res = ser.readline().decode('latin-1').strip()
