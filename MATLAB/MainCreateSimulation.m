@@ -33,7 +33,7 @@ currentSimulationData.accelerationSensorsActive = false;
 % settings.method.RandomHarmonic = 3;
 % settings.method.EarthquakeRecord = 4;
 
-% usedMethod = MethodEnum.Shinozuka;
+usedMethod = MethodEnum.FixedHarmonic;
 
 %These options are fixed for some cases, e.g. ShinozukaBenchmark
 stepsPerSecond = 100;
