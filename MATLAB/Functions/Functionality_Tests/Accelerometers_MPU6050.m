@@ -16,7 +16,7 @@ portList = serialportlist("available");
 % end
 
 %Manual selection of the correct port of the arduino board
-port = 'COM4';
+port = 'COM9';
 
 if exist("a",'var')
     if class(sensor_arduino)=="arduino"
@@ -37,7 +37,8 @@ samplesPerRead = sampleRate;
 
 count = 0;
 
-imu = mpu6050(sensor_arduino,'I2CAddress','0x69','SampleRate',sampleRate,...
+%'I2CAddress' sometimes it is '0x68', sometimes try '0x69'
+imu = mpu6050(sensor_arduino,'I2CAddress','0x68','SampleRate',sampleRate,...
     'SamplesPerRead',samplesPerRead,'OutputFormat','timetable','ReadMode','latest');
 % imu2 = mpu6050(a,'I2CAddress','0x69','SampleRate',sampleRate,...
 %     'SamplesPerRead',samplesPerRead,'OutputFormat','timetable','ReadMode','latest');
@@ -48,7 +49,7 @@ time_vec = linspace(0,10,100);
 
 %% Figureine
 figure;
-p1 = subplot(2,1,1);
+%p1 = subplot(2,1,1);
 xlabel('t [s]');
 ylabel('Acceleration $(m/s^2)$');
 title('Acceleration values from mpu6050 sensor 1');

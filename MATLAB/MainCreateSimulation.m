@@ -193,7 +193,7 @@ fprintf("Max Amplitude: %3.2f [mm], max velocity: %3.2f [mm/s], max acceleration
 
 %% find shaking table controller on the correct COM port, COM port needs to be identified manually
 
-dev = serialport("COM4",921600);
+dev = serialport("COM3",921600);
 pause(0.1)
 dev.flush
 fprintf(['Number of Bytes available: ', num2str(dev.NumBytesAvailable), '.\n'])
