@@ -73,7 +73,7 @@ switch usedMethod
         % Fibonacci
         %        [pos,t,name] = SimulateFixedHarmonic([1.6,4.1,6.6],[1,2,1],maxT,'nStepsPerSecond',stepsPerSecond);
 
-        [pos,t,name] = SimulateFixedHarmonic(1,1,maxT,'nStepsPerSecond',stepsPerSecond);
+        [pos,t,name] = SimulateFixedHarmonic(1,10,maxT,'nStepsPerSecond',stepsPerSecond);
         currentSimulationData.inputSignal = [t',pos'];
         currentSimulationData.motorRate = stepsPerSecond;
         methodName = 'HarmonicSignal';
