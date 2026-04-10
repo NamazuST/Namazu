@@ -8,58 +8,79 @@ from Functions import WriteMarvCode
 from Functions import SendCode2Motor
 #Import utilities
 import matplotlib.pyplot as plt
+import serial, time
 
-# Create an instance of the ShakingData class
-shaking_data_instance = ShakingDataClass.ShakingData()
+class ShnozukaBenchmark():
 
-#Simulation parameters
-Shinozuka_amplitude_scaling = 3; #Parameter to scale the amplitude of the shinozuka benchmark signals
+    def __init__(self, amplitude_scaling=3):
+        # Create an instance of the ShakingData class
+        self.shaking_data_instance = ShakingDataClass.ShakingData()
 
-#Simulate a fixed or mixed harmonic signal
-[pos_out, t_out, dt_out, maxT_out, shaking_data_instance] = InputSignalMethods.SimulateShinozukaBenchmark(Shinozuka_amplitude_scaling, shaking_data_instance)
+        #Simulation parameters
+        self.Shinozuka_amplitude_scaling = amplitude_scaling; #Parameter to scale the amplitude of the shinozuka benchmark signals
 
-# Create a line plot for one frequency
-plt.plot(t_out, pos_out)
-# displaying the title
-plt.title(shaking_data_instance.fileName)
-plt.xlabel("time in [s]")
-plt.ylabel("x in [mm]")
+    def simulate_input_signal(self):
+        #Simulate a fixed or mixed harmonic signal
+        [pos_out, t_out, dt_out, maxT_out, self.shaking_data_instance] = InputSignalMethods.SimulateShinozukaBenchmark(self.Shinozuka_amplitude_scaling, self.shaking_data_instance)
+        return pos_out, t_out, self.shaking_data_instance
 
-# Show the plot
-plt.show()
+        # # Create a line plot for one frequency
+        # plt.plot(t_out, pos_out)
+        # # displaying the title
+        # plt.title(shaking_data_instance.fileName)
+        # plt.xlabel("time in [s]")
+        # plt.ylabel("x in [mm]")
 
-#Store the input signal in the shaking data object
-shaking_data_instance.inputSignal= [t_out, pos_out]
+        # # Show the plot
+        # plt.show()
 
-#Write the marvCode
-shaking_data_instance = WriteMarvCode.WriteMarvCode(shaking_data_instance)
+    
+    def write_marv_code(self):
+        self.pos_out, self.t_out, self.shaking_data_instance = self.simulate_input_signal()
+        #Store the input signal in the shaking data object
+        self.shaking_data_instance.inputSignal= [self.t_out, self.pos_out]
 
-#This needs to be send to the ESP32
-import serial # pyserial is required
-import time
+        #Write the marvCode
+        self.shaking_data_instance = WriteMarvCode.WriteMarvCode(self.shaking_data_instance)
 
-# Set the COM port and baud rate according to your ESP32 configuration
-com_port = 'COM3'  # Change this to your COM port on Windows, e.g., 'COM3'
-baud_rate = 921600  # Change this to match your ESP32 configuration
+    def send_signal(self, app):
+        #This needs to be send to the ESP32
+        # import serial # pyserial is required
+        # import time
 
-# Open the serial connection
-ser = serial.Serial(com_port, baud_rate, timeout=1)
-# Flush any existing data in the input buffer
-ser.flushInput()
+        # Set the COM port and baud rate according to your ESP32 configuration
+        # com_port = 'COM3'  # Change this to your COM port on Windows, e.g., 'COM3'
+        # baud_rate = 921600  # Change this to match your ESP32 configuration
 
-# Send the marvCode (displacement history) to ESP32
-SendCode2Motor.SendMarvCode2Motor(ser, shaking_data_instance)
+        try:
+            # Open the serial connection
+            self.ser = serial.Serial(self.com_port, self.baud_rate, timeout=1)
+            # Flush any existing data in the input buffer
+            time.sleep(2)
+            self.ser.flushInput()
+        except:
+            print("Not able to open the connection!")
+            app.update_status("Device not available !")
+            return
 
-prompt_response = input("To continue, press 'y': ")
-if prompt_response.lower() == 'y':
-    print("Continuing...")
-    # Start the motor
-    SendCode2Motor.SendCmd2Motor(ser, 'start')
-    time.sleep(t_out[-1]+5)  # Wait for T+5 seconds
-else:
-    print("Not continuing.")
+        try:
+            # Send the marvCode (displacement history) to ESP32
+            print("Sending singal now")
+            SendCode2Motor.SendMarvCode2Motor(self.ser, self.shaking_data_instance)
+            app.update_status("Data sent")
+        except:
+            print("Device not available")
+            app.update_status("Device not available !")
+            return
 
-# Close port
-print("Shaking finished. Closing port...")
-ser.close()
-print("Port closed.")
+    def start_motor(self, app):
+        try:
+            # Start the motor
+            print("Starting Motor")
+            SendCode2Motor.SendCmd2Motor(self.ser, 'start')
+            time.sleep(self.t_out[-1])  # Wait for T seconds
+            app.update_status("Shaking finished.")
+        except:
+            print("Device not available")
+            app.update_status("Device not available !")
+            return
