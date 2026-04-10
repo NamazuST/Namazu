@@ -3,6 +3,7 @@ Namazu Shaking Table Control Interface
 A lightweight UI for generating signals and controlling the shaking table
 """
 
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 import matplotlib.pyplot as plt
@@ -12,6 +13,7 @@ import numpy as np
 import sys
 import os
 import serial.tools.list_ports
+import threading
 
 # Add Classes directory to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'Classes'))
@@ -114,10 +116,16 @@ class NamazuUI:
         self.shaking_data = None  # Store the ShakingData object
         self.namazu_instance = None
         self.health_check_running = False
+        self.is_shaking = False  # Track if shaking is in progress
+        self.shake_thread = None  # Thread for shake monitoring
+        self.stop_shake_flag = threading.Event()  # Flag to stop shaking
         
         # Create UI
         self.create_menu()
         self.create_main_layout()
+        
+        # Handle window close
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
     def create_menu(self):
         """Create menu bar"""
@@ -270,6 +278,10 @@ class NamazuUI:
         
         # Send to device
         ttk.Button(frame, text="Send to Device", command=self.send_to_device).pack(fill='x', pady=2)
+        
+        # Shake status indicator
+        self.shake_status_label = ttk.Label(frame, text="Table: Idle", foreground='gray')
+        self.shake_status_label.pack(fill='x', pady=2)
         
         ttk.Separator(frame, orient='horizontal').pack(fill='x', pady=5)
         
@@ -461,11 +473,15 @@ class NamazuUI:
             # Extract just the port name (e.g., "COM3" from "COM3 - USB Serial Device")
             comport = port_selection.split(' - ')[0].split()[0]
             
+            print("creating namazu instance")
             self.namazu_instance = NamazuInstance(comport)
+            print("connecting")
             self.namazu_instance.connect()
             
+            print("checking serial")
             self.health_canvas.itemconfig(self.health_indicator, fill='green')
             self.status_label.config(text="Connected")
+            print("updating status")
             self.update_marv_status()
             
             messagebox.showinfo("Success", f"Connected to {comport}")
@@ -477,6 +493,12 @@ class NamazuUI:
     
     def disconnect_device(self):
         """Disconnect from device"""
+        # Stop any ongoing shake
+        if self.is_shaking:
+            self.stop_shake_flag.set()
+            if self.shake_thread and self.shake_thread.is_alive():
+                self.shake_thread.join(timeout=2.0)
+        
         if self.namazu_instance:
             self.namazu_instance.disconnect()
             self.namazu_instance = None
@@ -485,6 +507,7 @@ class NamazuUI:
         self.status_label.config(text="Disconnected")
         self.shaking_data = None  # Clear MarvCode when disconnecting
         self.update_marv_status()
+        self._update_shake_status(False, "Idle", "gray")
         
         # Refresh port list in case device was unplugged
         self.refresh_ports()
@@ -531,28 +554,96 @@ class NamazuUI:
         if not self.namazu_instance:
             messagebox.showwarning("Not Connected", "Please connect to device first")
             return
-        messagebox.showinfo("TODO", "Start command not yet implemented")
+        
+        if self.is_shaking:
+            messagebox.showwarning("Already Running", "Shaking is already in progress")
+            return
+        
+        # Start shake in background thread
+        print("clearing stop shake flag")
+        self.stop_shake_flag.clear()
+        print("creating shake thread")
+        self.shake_thread = threading.Thread(target=self._shake_worker, daemon=True)
+        print("starting shake thread")
+        self.shake_thread.start()
+        
+    def _shake_worker(self):
+        """Worker thread that monitors shake status"""
+        print("shake worker started")
+        try:
+            # Update UI status (thread-safe using after)
+            print("updating shake status to running")
+            self.root.after(0, self._update_shake_status, True, "Running...", "blue")
+            print("sending start command to device")
+            self.namazu_instance.send_command("start\n")
+            
+            # Monitor until shaking finishes or stop is requested
+            while not self.stop_shake_flag.is_set():
+                try:
+                    response = self.namazu_instance.query_status()
+                    
+                    if response:
+                        print(f"Device status: {response}")
+                    
+                    if response and "RUNNING" not in response:
+                        print("breaking")
+                        break
+                    time.sleep(0.5)
+                    
+                except Exception as e:
+                    print(f"Error reading status: {e}")
+                    break
+            
+            # Update UI when done
+            if self.stop_shake_flag.is_set():
+                self.root.after(0, self._update_shake_status, False, "Stopped", "orange")
+            else:
+                self.root.after(0, self._update_shake_status, False, "Completed", "green")
+            
+        except Exception as e:
+            print(f"Shake worker error: {e}")
+            self.root.after(0, messagebox.showerror, "Shake Error", f"Error during shaking:\n{str(e)}")
+            self.root.after(0, self._update_shake_status, False, "Error", "red")
+    
+    def _update_shake_status(self, is_shaking, status_text, color):
+        """Update shake status label (thread-safe)"""
+        self.is_shaking = is_shaking
+        self.shake_status_label.config(
+            text=f"Table: {status_text}",
+            foreground=color
+        )
     
     def stop_shake(self):
         """Stop shaking"""
         if not self.namazu_instance:
             messagebox.showwarning("Not Connected", "Please connect to device first")
             return
-        messagebox.showinfo("TODO", "Stop command not yet implemented")
+    
+        try:
+            self.stop_shake_flag.set()
+            self.namazu_instance.send_command("stop\n")
+            self._update_shake_status(False, "Stopping...", "orange")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to stop shaking:\n{str(e)}")
     
     def center_table(self):
         """Center the table"""
         if not self.namazu_instance:
             messagebox.showwarning("Not Connected", "Please connect to device first")
             return
-        messagebox.showinfo("TODO", "Center command not yet implemented")
+        
+        messagebox.showerror("Not Implemented", "Centering command not yet implemented in NamazuInstance")
+        return
     
     def home_table(self):
         """Home the table"""
         if not self.namazu_instance:
             messagebox.showwarning("Not Connected", "Please connect to device first")
             return
-        messagebox.showinfo("TODO", "Home command not yet implemented")
+        
+        messagebox.showerror("Not Implemented", "Homing command not yet implemented in NamazuInstance")
+        return
     
     # Menu callbacks
     def load_signal(self):
@@ -569,6 +660,24 @@ class NamazuUI:
     
     def show_about(self):
         messagebox.showinfo("About", "Namazu Shaking Table Control v0.1\n\nA lightweight interface for controlling the Namazu shaking table")
+    
+    def on_closing(self):
+        """Handle window close event"""
+        # Stop any running shake
+        if self.is_shaking:
+            self.stop_shake_flag.set()
+            if self.shake_thread and self.shake_thread.is_alive():
+                self.shake_thread.join(timeout=2.0)
+        
+        # Disconnect device
+        if self.namazu_instance:
+            try:
+                self.namazu_instance.disconnect()
+            except:
+                pass
+        
+        # Close window
+        self.root.destroy()
 
 
 def main():

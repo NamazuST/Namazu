@@ -29,6 +29,8 @@ class NamazuInstance:
 
         n_cmd = len(cmd_array)
 
+        response = ""
+
         for k in tqdm(range(0, n_cmd-1), desc="Sending commands"):
             # Send a command to the ESP32
             self.serial_object.write(cmd_array[k].encode() + b'\n')
@@ -38,6 +40,8 @@ class NamazuInstance:
             # Check if the response contains 'OK'
             if not response.startswith("OK"):
                 raise Exception('Response does not contain "OK".')
+            
+        return response
 
     def connect(self):
         # Open the serial connection
@@ -89,3 +93,16 @@ class NamazuInstance:
         }
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=4)
+
+    def query_status(self):
+        """
+        Query device status without validation.
+        Returns the raw status response from the device.
+        Useful for monitoring loops that need actual status info, not just "OK".
+        """
+        if not self.serial_object or not self.serial_object.is_open:
+            raise ConnectionError("Serial port is not open")
+        
+        self.serial_object.write(b'info\n')
+        response = self.serial_object.readline().decode().strip()
+        return response
