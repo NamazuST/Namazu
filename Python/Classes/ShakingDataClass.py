@@ -26,13 +26,16 @@ class ShakingData:
         self.inputAcceleration : np.ndarray = np.array([])
         self.sampleRate : float = sampleRate
         self.marvCode : str = ""
-        self.signalFiltered : bool = False 
+        self.signalFiltered : bool = True 
         self.namazuInstance : NamazuInstance = namazuInstance
         self.maxT : float = maxT
 ###################################################################################################################################
     def setup(self):
         # Numerical differentiation to obtain speed and velocity values from the position signal
         # adds a 0 as an initial value for the first time step
+
+        if self.signalFiltered:
+            self.filter_signal(1.0, 0.5)
         self.inputVelocity = np.column_stack([
             self.inputSignal[:, 0],
             np.hstack([0, np.diff(self.inputSignal[:, 1]) / np.diff(self.inputSignal[:, 0])])
@@ -60,6 +63,35 @@ class ShakingData:
             cmd += form % pos[i]
 
         return cmd
+    
+    def filter_signal(self, start: float, end: float):
+        # Apply linear fade at start seconds and (maxT - end) seconds to avoid discontinuities in the signal
+        if self.inputSignal.size == 0:
+            raise ValueError("Input signal is empty. Cannot filter signal.")
+        
+        if start < 0 or end < 0 or start + end >= self.maxT:
+            raise ValueError("Start and end times must be within the range of the signal duration.")
+
+        weights = np.ones(len(self.inputSignal))
+        mask_start = self.inputSignal[:, 0] < start
+        mask_end = self.inputSignal[:, 0] > (self.maxT - end)
+
+        if start > 0:
+            weights[mask_start] = np.linspace(0, 1, sum(mask_start))
+        
+        if end > 0:
+            weights[mask_end] = np.linspace(1, 0, sum(mask_end))
+
+        print(weights)
+        print(weights.shape)
+
+        print(self.inputSignal)
+        print(self.inputSignal.shape)
+        
+        self.inputSignal[:, 1] = self.inputSignal[:, 1] * weights
+
+        print(self.inputSignal)
+        print(self.inputSignal.shape)
     
 class FixedHarmonicShakingData(ShakingData):
     def __init__(self, namazuInstance=None, frequencies=1.0, amplitudes=1.0, sampleRate=100.0, maxT=10.0):
