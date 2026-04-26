@@ -4,6 +4,8 @@ from enum import Enum
 import sys
 from pathlib import Path
 from NamazuInstance import NamazuInstance
+from dataclasses import dataclass, field
+from typing import Any, List, Literal
 
 ###################################################################################################################################
 # Signal Generation Method enumeration
@@ -93,6 +95,16 @@ class ShakingData:
         print(self.inputSignal)
         print(self.inputSignal.shape)
     
+@dataclass
+class ParameterDefinition:
+    """Describes a single user-configurable parameter for a ShakingData subclass."""
+    name: str                          # internal key, used as constructor kwarg
+    label: str                         # display label in the UI
+    type: Literal["float", "int", "str", "float_list", "choice"]
+    default: Any
+    choices: List[str] = field(default_factory=list)  # only for type="choice"
+    unit: str = ""                     # optional unit shown next to label
+
 class FixedHarmonicShakingData(ShakingData):
     def __init__(self, namazuInstance=None, frequencies=1.0, amplitudes=1.0, sampleRate=100.0, maxT=10.0):
         super().__init__(namazuInstance, sampleRate, maxT)
@@ -118,7 +130,89 @@ class FixedHarmonicShakingData(ShakingData):
         self.inputSignal = np.column_stack((t_out, pos_out))
         super().setup()
 
+    @classmethod
+    def get_parameter_definitions(cls) -> List[ParameterDefinition]:
+        return [
+            ParameterDefinition("frequencies", "Frequencies", "float_list", "1.0",  unit="Hz"),
+            ParameterDefinition("amplitudes",  "Amplitudes",  "float_list", "5.0",  unit="mm"),
+        ]
+
+    @classmethod
+    def from_params(cls, params: dict, namazu_instance, sample_rate: float, max_t: float):
+        return cls(
+            namazuInstance=namazu_instance,
+            frequencies=params["frequencies"],
+            amplitudes=params["amplitudes"],
+            sampleRate=sample_rate,
+            maxT=max_t,
+        )
+
+
 class ShinozukaShakingData(ShakingData):
-    def __init__(self, namazuInstance=None, psd_func=None, sampleRate=100.0, maxT=10.0):
+    def __init__(self, namazuInstance=None, omega_g=15.0, zeta_g=0.6, 
+                 psd_type="Kanai-Tajimi", sampleRate=100.0, maxT=10.0):
         super().__init__(namazuInstance, sampleRate, maxT)
-        self.psd_func = psd_func
+        self.omega_g = omega_g
+        self.zeta_g = zeta_g
+        self.psd_type = psd_type
+        # Build the psd_func from parameters
+        if psd_type == "Kanai-Tajimi":
+            self.psd_func = lambda w: self._kanai_tajimi_psd(w, omega_g, zeta_g)
+        else:
+            self.psd_func = None  # placeholder for custom
+
+    @staticmethod
+    def _kanai_tajimi_psd(omega, omega_g, zeta_g, S0=1.0):
+        """Kanai-Tajimi power spectral density."""
+        num = 1 + (2 * zeta_g * omega / omega_g) ** 2
+        den = (1 - (omega / omega_g) ** 2) ** 2 + (2 * zeta_g * omega / omega_g) ** 2
+        return S0 * num / den
+
+    def generate_signal(self):
+        if self.psd_func is None:
+            raise NotImplementedError("No PSD function defined for this configuration.")
+        dw = 2 * np.pi / self.maxT
+        w = np.arange(dw, 10 * self.omega_g, dw)
+        t = np.arange(0, self.maxT, 1 / self.sampleRate)
+        pos = SpectralRepresentationMethod(self.psd_func, w, t)
+        self.inputSignal = np.column_stack((t, pos))
+        super().setup()
+
+    @classmethod
+    def get_parameter_definitions(cls) -> List[ParameterDefinition]:
+        return [
+            ParameterDefinition("omega_g", "Ground frequency ωg", "float", "15.0", unit="rad/s"),
+            ParameterDefinition("zeta_g",  "Damping ratio ζg",    "float", "0.6"),
+            ParameterDefinition("psd_type","PSD Type",            "choice","Kanai-Tajimi",
+                                choices=["Kanai-Tajimi", "Custom"]),
+        ]
+
+    @classmethod
+    def from_params(cls, params: dict, namazu_instance, sample_rate: float, max_t: float):
+        return cls(
+            namazuInstance=namazu_instance,
+            omega_g=params["omega_g"],
+            zeta_g=params["zeta_g"],
+            psd_type=params["psd_type"],
+            sampleRate=sample_rate,
+            maxT=max_t,
+        )
+
+
+def SpectralRepresentationMethod(S, w, t):
+    Nt = len(t)
+    Nw = len(w)
+    dw = w[1] - w[0]
+    
+    x_shnzk = np.zeros(Nt)
+    
+    for w_n in range(Nw):
+        if w[w_n] == 0:
+            A = 0
+        else:
+            A = np.sqrt(2 * S(w[w_n]) * dw)
+        
+        phi = np.random.rand() * (2 * np.pi)
+        x_shnzk += np.sqrt(2) * A * np.cos(w[w_n] * t + phi)
+    
+    return x_shnzk

@@ -32,75 +32,66 @@ class SignalParameterPanel(ttk.Frame):
         raise NotImplementedError
         
 
-class FixedHarmonicPanel(SignalParameterPanel):
-    """Parameter panel for Fixed Harmonic signal generation"""
-    def __init__(self, parent, on_update_callback):
-        super().__init__(parent, on_update_callback)
-        
-        ttk.Label(self, text="Fixed Harmonic Parameters", font=('Arial', 10, 'bold')).grid(row=0, column=0, columnspan=2, pady=5)
-        
-        # Frequencies input
-        ttk.Label(self, text="Frequencies (Hz, comma-separated):").grid(row=1, column=0, sticky='w', padx=5, pady=2)
-        self.freq_entry = ttk.Entry(self, width=30)
-        self.freq_entry.insert(0, "1.0, 2.0, 3.0")
-        self.freq_entry.grid(row=1, column=1, padx=5, pady=2)
-        self.freq_entry.bind('<KeyRelease>', lambda e: on_update_callback())
-        
-        # Amplitudes input
-        ttk.Label(self, text="Amplitudes (mm, comma-separated):").grid(row=2, column=0, sticky='w', padx=5, pady=2)
-        self.amp_entry = ttk.Entry(self, width=30)
-        self.amp_entry.insert(0, "5.0, 3.0, 2.0")
-        self.amp_entry.grid(row=2, column=1, padx=5, pady=2)
-        self.amp_entry.bind('<KeyRelease>', lambda e: on_update_callback())
-        
-    def get_frequencies(self):
-        try:
-            return [float(x.strip()) for x in self.freq_entry.get().split(',')]
-        except:
-            return [1.0, 2.0, 3.0]
-    
-    def get_amplitudes(self):
-        try:
-            return [float(x.strip()) for x in self.amp_entry.get().split(',')]
-        except:
-            return [5.0, 3.0, 2.0]
-    
-    def get_shaking_data(self):
-        data = FixedHarmonicShakingData()
-        # TODO: Set frequencies and amplitudes on data object
-        return data
+# Registry: maps SignalGenerationMethod value -> ShakingData subclass
+METHOD_CLASS_MAP = {
+    SignalGenerationMethod.FIXED_HARMONIC: FixedHarmonicShakingData,
+    SignalGenerationMethod.SHINOZUKA:      ShinozukaShakingData,
+}
 
 
-class ShinozukaPanel(SignalParameterPanel):
-    """Parameter panel for Shinozuka signal generation"""
-    def __init__(self, parent, on_update_callback):
+class AutoParameterPanel(SignalParameterPanel):
+    """Automatically builds a parameter panel from a ShakingData class's definitions."""
+
+    def __init__(self, parent, on_update_callback, shaking_data_class):
         super().__init__(parent, on_update_callback)
-        
-        ttk.Label(self, text="Shinozuka Parameters", font=('Arial', 10, 'bold')).grid(row=0, column=0, columnspan=2, pady=5)
-        
-        # PSD parameters (placeholder - adjust based on your implementation)
-        ttk.Label(self, text="PSD Type:").grid(row=1, column=0, sticky='w', padx=5, pady=2)
-        self.psd_combo = ttk.Combobox(self, values=["Kanai-Tajimi", "Custom"], state='readonly', width=27)
-        self.psd_combo.set("Kanai-Tajimi")
-        self.psd_combo.grid(row=1, column=1, padx=5, pady=2)
-        self.psd_combo.bind('<<ComboboxSelected>>', lambda e: on_update_callback())
-        
-        ttk.Label(self, text="Ground frequency ωg (rad/s):").grid(row=2, column=0, sticky='w', padx=5, pady=2)
-        self.omega_g_entry = ttk.Entry(self, width=30)
-        self.omega_g_entry.insert(0, "15.0")
-        self.omega_g_entry.grid(row=2, column=1, padx=5, pady=2)
-        self.omega_g_entry.bind('<KeyRelease>', lambda e: on_update_callback())
-        
-        ttk.Label(self, text="Damping ratio ζg:").grid(row=3, column=0, sticky='w', padx=5, pady=2)
-        self.zeta_g_entry = ttk.Entry(self, width=30)
-        self.zeta_g_entry.insert(0, "0.6")
-        self.zeta_g_entry.grid(row=3, column=1, padx=5, pady=2)
-        self.zeta_g_entry.bind('<KeyRelease>', lambda e: on_update_callback())
-        
+        self._class = shaking_data_class
+        self._widgets = {}  # name -> widget
+
+        defs = shaking_data_class.get_parameter_definitions()
+        ttk.Label(self, text=f"{shaking_data_class.__name__} Parameters",
+                  font=('Arial', 10, 'bold')).grid(row=0, column=0, columnspan=2, pady=5)
+
+        for row, p in enumerate(defs, start=1):
+            unit_suffix = f" ({p.unit})" if p.unit else ""
+            ttk.Label(self, text=f"{p.label}{unit_suffix}:").grid(
+                row=row, column=0, sticky='w', padx=5, pady=2)
+
+            if p.type == "choice":
+                w = ttk.Combobox(self, values=p.choices, state='readonly', width=27)
+                w.set(p.default)
+                w.bind('<<ComboboxSelected>>', lambda e: on_update_callback())
+            else:
+                w = ttk.Entry(self, width=30)
+                w.insert(0, str(p.default))
+                w.bind('<KeyRelease>', lambda e: on_update_callback())
+
+            w.grid(row=row, column=1, padx=5, pady=2)
+            self._widgets[p.name] = (p, w)
+
+    def _parse_value(self, param_def, raw: str):
+        """Convert raw string to the appropriate Python type."""
+        t = param_def.type
+        if t == "float":
+            return float(raw)
+        if t == "int":
+            return int(raw)
+        if t == "float_list":
+            return [float(x.strip()) for x in raw.split(',')]
+        return raw  # str / choice
+
+    def get_params(self) -> dict:
+        """Return {name: typed_value} for all parameters; falls back to defaults on error."""
+        result = {}
+        for name, (p, w) in self._widgets.items():
+            try:
+                result[name] = self._parse_value(p, w.get())
+            except (ValueError, TypeError):
+                result[name] = self._parse_value(p, str(p.default))
+        return result
+
     def get_shaking_data(self):
-        data = ShinozukaShakingData()
-        # TODO: Set PSD parameters on data object
-        return data
+        # Thin wrapper — real instantiation happens in generate_signal via from_params
+        raise NotImplementedError("Use from_params() on the ShakingData class directly.")
 
 
 class NamazuUI:
@@ -320,89 +311,51 @@ class NamazuUI:
         self.canvas.draw()
         
     def switch_parameter_panel(self):
-        """Switch parameter panel based on selected method"""
-        # Destroy old panel
         if self.current_param_panel:
             self.current_param_panel.destroy()
-        
-        # Create new panel based on method
+
         method = self.method_var.get()
-        
-        if method == SignalGenerationMethod.FIXED_HARMONIC:
-            self.current_param_panel = FixedHarmonicPanel(self.param_panel_container, self.update_plot)
-        elif method == SignalGenerationMethod.SHINOZUKA:
-            self.current_param_panel = ShinozukaPanel(self.param_panel_container, self.update_plot)
+        cls = METHOD_CLASS_MAP.get(method)
+
+        if cls:
+            self.current_param_panel = AutoParameterPanel(
+                self.param_panel_container, self.update_plot, cls)
         else:
-            self.current_param_panel = ttk.Label(self.param_panel_container, text="Coming soon...")
-        
+            self.current_param_panel = ttk.Label(
+                self.param_panel_container, text="Coming soon...")
+
         self.current_param_panel.pack(fill='both', expand=True)
         self.update_plot()
-        
+
     def generate_signal(self):
-        """Generate signal based on current parameters"""
         try:
-            max_t = float(self.max_t_entry.get())
+            max_t       = float(self.max_t_entry.get())
             sample_rate = float(self.sample_rate_entry.get())
-            
-            # Generate signal based on method
-            method = self.method_var.get()
-            
-            if method == SignalGenerationMethod.FIXED_HARMONIC:
-                freqs = self.current_param_panel.get_frequencies()
-                amps = self.current_param_panel.get_amplitudes()
-                
-                # Create ShakingData instance
-                self.shaking_data = FixedHarmonicShakingData(
-                    namazuInstance=self.namazu_instance,
-                    frequencies=freqs,
-                    amplitudes=amps,
-                    sampleRate=sample_rate,
-                    maxT=max_t
-                )
-                
-                # Generate the signal (this also calls setup() and generates MarvCode)
-                self.shaking_data.generate_signal()
-                self.current_signal = self.shaking_data.inputSignal
-                    
-            elif method == SignalGenerationMethod.SHINOZUKA:
-                # Create ShakingData instance
-                self.shaking_data = ShinozukaShakingData(
-                    namazuInstance=self.namazu_instance,
-                    psd_func=None,  # TODO: Get from panel
-                    sampleRate=sample_rate,
-                    maxT=max_t
-                )
-                
-                # TODO: Implement Shinozuka generate_signal method
-                # For now, placeholder
-                t = np.linspace(0, max_t, int(max_t * sample_rate))
-                signal = 5 * np.random.randn(len(t))
-                self.shaking_data.inputSignal = np.column_stack([t, signal])
-                self.shaking_data.setup()
-                self.current_signal = self.shaking_data.inputSignal
-                
-            else:
+            method      = self.method_var.get()
+            cls         = METHOD_CLASS_MAP.get(method)
+
+            if cls is None:
                 messagebox.showwarning("Not Implemented", "This method is not yet implemented")
                 return
-            
-            # Update plot
+
+            params = self.current_param_panel.get_params()
+            self.shaking_data = cls.from_params(params, self.namazu_instance, sample_rate, max_t)
+            self.shaking_data.generate_signal()
+            self.current_signal = self.shaking_data.inputSignal
+
             self.update_plot()
-            
-            # Update MarvCode status
             self.update_marv_status()
-            
-            marv_status = ""
+
+            marv_suffix = ""
             if self.shaking_data.marvCode:
-                marv_status = f"\nMarvCode generated: {len(self.shaking_data.marvCode)} chars"
-            
+                marv_suffix = f"\nMarvCode: {len(self.shaking_data.marvCode)} chars"
             self.marv_status_label.config(
-                    text=f"Signal generated: {len(self.current_signal)} samples over {max_t}s{marv_status}",
-                    foreground='green'
-                )
-            
+                text=f"Signal generated: {len(self.current_signal)} samples over {max_t}s{marv_suffix}",
+                foreground='green')
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to generate signal:\n{str(e)}")
-    
+
     def update_plot(self):
         """Update the plot with current signal"""
         if self.current_signal is not None:
