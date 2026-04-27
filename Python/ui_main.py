@@ -18,7 +18,7 @@ import threading
 # Add Classes directory to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'Classes'))
 
-from ShakingDataClass import SignalGenerationMethod, ShakingData, FixedHarmonicShakingData, ShinozukaShakingData
+from ShakingDataClass import SignalGenerationMethod, ShakingData, FixedHarmonicShakingData, ShinozukaShakingData, FrequencySweepShakingData
 from NamazuInstance import NamazuInstance
 
 class SignalParameterPanel(ttk.Frame):
@@ -36,6 +36,7 @@ class SignalParameterPanel(ttk.Frame):
 METHOD_CLASS_MAP = {
     SignalGenerationMethod.FIXED_HARMONIC: FixedHarmonicShakingData,
     SignalGenerationMethod.SHINOZUKA:      ShinozukaShakingData,
+    SignalGenerationMethod.FREQUENCY_SWEEP: FrequencySweepShakingData,
 }
 
 
@@ -226,7 +227,7 @@ class NamazuUI:
         methods = [
             (SignalGenerationMethod.FIXED_HARMONIC, "Fixed Harmonic"),
             (SignalGenerationMethod.SHINOZUKA, "Shinozuka (Spectral)"),
-            (SignalGenerationMethod.KANAI_TAJIMI, "Kanai-Tajimi (Coming Soon)")
+            (SignalGenerationMethod.FREQUENCY_SWEEP, "Frequency Sweep"),
         ]
         
         for value, text in methods:

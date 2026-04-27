@@ -14,7 +14,7 @@ class SignalGenerationMethod:
     NONE = "none"
     SHINOZUKA = "shinozuka"
     FIXED_HARMONIC = "fixed_harmonic"
-    KANAI_TAJIMI = "kanai_tajimi"
+    FREQUENCY_SWEEP = "frequency_sweep"
 
 ###################################################################################################################################
 # Class definition for the shaking data object
@@ -216,3 +216,36 @@ def SpectralRepresentationMethod(S, w, t):
         x_shnzk += np.sqrt(2) * A * np.cos(w[w_n] * t + phi)
     
     return x_shnzk
+
+class FrequencySweepShakingData(ShakingData):
+    def __init__(self, namazuInstance=None, f_start=0.1, f_end=10.0, amplitude=1.0,sampleRate=100.0, maxT=10.0):
+        super().__init__(namazuInstance, sampleRate, maxT)
+        self.f_start = f_start
+        self.f_end = f_end
+        self.amplitude = amplitude
+
+    def generate_signal(self):
+        t = np.arange(0, self.maxT, 1 / self.sampleRate)
+        k = (self.f_end - self.f_start) / self.maxT
+        pos = self.amplitude * np.sin(2 * np.pi * (self.f_start * t + 0.5 * k * t**2))
+        self.inputSignal = np.column_stack((t, pos))
+        super().setup()
+
+    @classmethod
+    def get_parameter_definitions(cls) -> List[ParameterDefinition]:
+        return [
+            ParameterDefinition("f_start", "Start frequency f_start", "float", "0.1", unit="Hz"),
+            ParameterDefinition("f_end", "End frequency f_end", "float", "10.0", unit="Hz"),
+            ParameterDefinition("amplitude", "Amplitude", "float", "1.0", unit="mm"),
+        ]
+
+    @classmethod
+    def from_params(cls, params: dict, namazu_instance, sample_rate: float, max_t: float):
+        return cls(
+            namazuInstance=namazu_instance,
+            f_start=params["f_start"],
+            f_end=params["f_end"],
+            amplitude=params["amplitude"],
+            sampleRate=sample_rate,
+            maxT=max_t,
+        )
