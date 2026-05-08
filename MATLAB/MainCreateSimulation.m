@@ -22,7 +22,7 @@ t = []; % time vector
 pos = []; % position vector
 
 %Are the acceleration sensors operating?
-currentSimulationData.accelerationSensorsActive = false;
+currentSimulationData.accelerationSensorsActive = true;
 
 %% Choice of method
 
@@ -193,7 +193,7 @@ fprintf("Max Amplitude: %3.2f [mm], max velocity: %3.2f [mm/s], max acceleration
 
 %% find shaking table controller on the correct COM port, COM port needs to be identified manually
 
-dev = serialport("COM3",921600);
+dev = serialport("COM5",921600);
 pause(0.1)
 dev.flush
 fprintf(['Number of Bytes available: ', num2str(dev.NumBytesAvailable), '.\n'])
@@ -214,7 +214,7 @@ if ~strcmp(input("Continue with starting the experiment? y/n\n",'s'),'y')
 end
 
 % Main function to start the experiment
-currentSimulationData = StartExperiment(currentSimulationData,dev);
+currentSimulationData = StartExperimentSensorSerial(currentSimulationData,dev);
 
 save(currentSimulationData.fileName,'currentSimulationData');
 
