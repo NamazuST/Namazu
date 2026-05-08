@@ -222,9 +222,7 @@ save(currentSimulationData.fileName,'currentSimulationData');
 %currently only supported for acceleration sensors
 
 if currentSimulationData.accelerationSensorsActive
-    %Set the lowpass frequency above which all frequencies are filtered out
-    lowpassFrequency = 20;
-    AnalyzeData(currentSimulationData, lowpassFrequency);
+    results = EstimateEigenfrequencyFRF(currentSimulationData);
 end
 
 %Le Finy
