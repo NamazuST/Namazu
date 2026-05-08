@@ -216,14 +216,17 @@ end
 % Main function to start the experiment
 currentSimulationData = StartExperimentSensorSerial(currentSimulationData,dev);
 
-save(currentSimulationData.fileName,'currentSimulationData');
 
 %% Post-processing
 %currently only supported for acceleration sensors
 
 if currentSimulationData.accelerationSensorsActive
     results = EstimateEigenfrequencyFRF(currentSimulationData);
+    currentSimulationData.estimatedFrequencies = results.freqHz;
 end
+
+%los savos
+save(currentSimulationData.fileName,'currentSimulationData');
 
 %Le Finy
 fprintf('[%s]: ', datetime("now"))

@@ -22,6 +22,8 @@ classdef ShakingData
     
         sensorRigData table;
         sensorRigValidationMeans table;
+
+        estimatedFrequencies (1,:) double;
     
         motorStartupDelay double;
         motionStartupDelay double;
