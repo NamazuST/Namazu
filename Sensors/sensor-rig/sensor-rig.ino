@@ -10,8 +10,19 @@ const int AD0_PINS[NUM_SENS] = {2, 3, 4, 5, 6};
 MPU6050 MPU[NUM_SENS];
 bool sensorOK[NUM_SENS];
 
-const unsigned long SAMPLE_INTERVAL_MS = 10;   // 100 Hz
-unsigned long lastSample = 0;
+const unsigned long SERIAL_BAUD = 1000000;
+const unsigned long I2C_CLOCK_HZ = 400000;
+const unsigned long SAMPLE_RATE_HZ = 250;      // Nyquist = 125 Hz
+const unsigned long SAMPLE_INTERVAL_US = 1000000UL / SAMPLE_RATE_HZ;
+unsigned long lastSampleUs = 0;
+
+// MPU6050 sample rate = 1 kHz / (1 + divider) when DLPF is enabled.
+// 1 kHz / (1 + 3) = 250 Hz.
+const uint8_t MPU_SAMPLE_RATE_DIVIDER = 3;
+
+// DLPF config 1 keeps the accelerometer bandwidth high enough for 100 Hz
+// frequency-domain analysis while still filtering some high-frequency noise.
+const uint8_t MPU_DLPF_CONFIG = 1;
 
 // ±4 g => 8192 LSB/g
 const float ACCEL_SCALE_LSB_PER_G = 8192.0f;
@@ -180,13 +191,17 @@ void runStaticValidation()
 
 void setup()
 {
-    Serial.begin(115200);
+    Serial.begin(SERIAL_BAUD);
     while (!Serial);
 
     Serial.println("MPU6050 Multi-Sensor Raw Acceleration Test");
+    Serial.print("Target sample rate [Hz]: ");
+    Serial.println(SAMPLE_RATE_HZ);
+    Serial.print("Serial baud: ");
+    Serial.println(SERIAL_BAUD);
 
     Wire.begin();
-    Wire.setClock(100000);   // erstmal robuster zum Debuggen
+    Wire.setClock(I2C_CLOCK_HZ);
 
     // Falls dein Core es unterstützt, kannst du zusätzlich testen:
     // Wire.setWireTimeout(3000, true);
@@ -217,9 +232,15 @@ void setup()
         }
 
         MPU[i].setFullScaleAccelRange(MPU6050_ACCEL_FS_4);
+        MPU[i].setDLPFMode(MPU_DLPF_CONFIG);
+        MPU[i].setRate(MPU_SAMPLE_RATE_DIVIDER);
 
         Serial.print("  Accel range code: ");
         Serial.println(MPU[i].getFullScaleAccelRange());
+        Serial.print("  DLPF config: ");
+        Serial.println(MPU[i].getDLPFMode());
+        Serial.print("  Sample-rate divider: ");
+        Serial.println(MPU[i].getRate());
 
         // optionaler einmaliger Testread direkt nach Init
         if (readMPUAccel(i)) {
@@ -250,13 +271,15 @@ void setup()
 
 void loop()
 {
-    if (millis() - lastSample < SAMPLE_INTERVAL_MS) {
+    unsigned long nowUs = micros();
+
+    if (nowUs - lastSampleUs < SAMPLE_INTERVAL_US) {
         return;
     }
 
-    lastSample = millis();
+    lastSampleUs = nowUs;
 
-    Serial.print(lastSample);
+    Serial.print(nowUs / 1000);
     Serial.print(";");
 
     for (int i = 0; i < NUM_SENS; i++) {
