@@ -1,4 +1,4 @@
-function results = EstimateEigenfrequencyFRF(currentSimulationData)
+function results = EstimateEigenfrequencyFRF(dataSource, varargin)
 % EstimateEigenfrequencyFRF
 %
 % Forced-vibration frequency estimation from NAMAZU sensor-rig data.
@@ -8,6 +8,7 @@ function results = EstimateEigenfrequencyFRF(currentSimulationData)
 %
 % Expected data source:
 %   currentSimulationData.sensorRigData
+%   or the sensorRigData table T directly
 %
 % Expected default columns:
 %   t_arduino_elapsed_s
@@ -32,38 +33,92 @@ function results = EstimateEigenfrequencyFRF(currentSimulationData)
 %   results.time         uniform time vector [s]
 %
 % Notes:
-%   - Uses x-direction by default.
+%   - Uses y-direction by default.
 %   - Assumes the acceleration unit in the table is g.
 %   - Converts to m/s^2 before FRF estimation.
 %   - Resamples to an equidistant time vector because serial data may have
 %     small timestamp jitter.
 %   - Requires Signal Processing Toolbox for tfestimate, mscohere, findpeaks.
+%
+% Usage:
+%   results = EstimateEigenfrequencyFRF(currentSimulationData);
+%   results = EstimateEigenfrequencyFRF(T);
+%   results = EstimateEigenfrequencyFRF(T, "Direction", "z", ...
+%       "SampleRate", 250, "FMax", 100, "FrequencyResolutionHz", 0.25);
+%   results = EstimateEigenfrequencyFRF(T, "Meta", meta);
 
 %% -------------------- USER-ADJUSTABLE DEFAULTS --------------------
-g = 9.81;
+parser = inputParser;
+parser.FunctionName = mfilename;
 
-direction = "x";               % "x", "y", or "z"
-inputSensor = 1;               % sensor used as input/base excitation
-outputSensors = [];            % empty => use all sensors except inputSensor
+addParameter(parser, "Direction", "y", @(x) ischar(x) || isstring(x));
+addParameter(parser, "InputSensor", 1, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "OutputSensors", [], @(x) isempty(x) || (isnumeric(x) && isvector(x) && all(x > 0)));
+addParameter(parser, "UseCorrectedSignals", true, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, "RelativePeakLevel", 0.03, @(x) isnumeric(x) && isscalar(x) && x >= 0);
+addParameter(parser, "MinPeakDistanceHz", 15, @(x) isnumeric(x) && isscalar(x) && x >= 0);
+addParameter(parser, "DeltaFInterp", 5, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "FMin", 0.5, @(x) isnumeric(x) && isscalar(x) && x >= 0);
+addParameter(parser, "FMax", 100, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "MakePlots", true, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, "SampleRate", [], @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x > 0));
+addParameter(parser, "NumberOfSensors", [], @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x > 0));
+addParameter(parser, "Gravity", 9.81, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "UseNominalSampleRate", false, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, "FrequencyResolutionHz", 0.25, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "WindowDurationSeconds", 8, @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x > 0));
+addParameter(parser, "Meta", [], @(x) isempty(x) || isstruct(x));
+parse(parser, varargin{:});
 
-useCorrectedSignals = true;    % prefer *_corr columns if available
+g = parser.Results.Gravity;
 
-% Peak-picking parameters
-relativePeakLevel = 0.03;      % peak threshold relative to max FRF envelope
-minPeakDistanceHz = 15;        % minimum distance between identified peaks
-deltaFInterp = 5;              % local interpolation range around each peak [Hz]
-fmin = 0.5;                    % lower search frequency [Hz]
-fmax = 100;                    % upper search frequency [Hz]
+direction = lower(strtrim(string(parser.Results.Direction)));
 
-% Plotting
-makePlots = true;
-
-%% -------------------- CHECK INPUT DATA --------------------
-if ~isprop(currentSimulationData, "sensorRigData") || isempty(currentSimulationData.sensorRigData)
-    error("currentSimulationData.sensorRigData does not exist or is empty.");
+if ~ismember(direction, ["x", "y", "z"])
+    error('Direction must be "x", "y", or "z".');
 end
 
-T = currentSimulationData.sensorRigData;
+inputSensor = double(parser.Results.InputSensor);
+validateattributes(inputSensor, {'numeric'}, {'scalar', 'integer', 'positive'}, mfilename, 'InputSensor');
+
+outputSensors = double(parser.Results.OutputSensors);
+if ~isempty(outputSensors)
+    validateattributes(outputSensors, {'numeric'}, {'vector', 'integer', 'positive'}, mfilename, 'OutputSensors');
+end
+
+useCorrectedSignals = logical(parser.Results.UseCorrectedSignals);
+
+relativePeakLevel = parser.Results.RelativePeakLevel;
+minPeakDistanceHz = parser.Results.MinPeakDistanceHz;
+deltaFInterp = parser.Results.DeltaFInterp;
+fmin = parser.Results.FMin;
+fmax = parser.Results.FMax;
+makePlots = logical(parser.Results.MakePlots);
+sampleRateOverride = parser.Results.SampleRate;
+numberOfSensorsOverride = parser.Results.NumberOfSensors;
+useNominalSampleRate = logical(parser.Results.UseNominalSampleRate);
+frequencyResolutionHz = parser.Results.FrequencyResolutionHz;
+windowDurationSeconds = parser.Results.WindowDurationSeconds;
+metaOverride = parser.Results.Meta;
+
+%% -------------------- CHECK INPUT DATA --------------------
+if nargin < 1 || isempty(dataSource)
+    error("Provide either currentSimulationData or the sensorRigData table T.");
+end
+
+[T, sourceSampleRate, sourceNumSens] = unpackSensorRigData(dataSource);
+
+if ~isempty(metaOverride)
+    if isfield(metaOverride, "sampleRate") && ...
+            isnumeric(metaOverride.sampleRate) && metaOverride.sampleRate > 0
+        sourceSampleRate = metaOverride.sampleRate;
+    end
+
+    if isfield(metaOverride, "numSensors") && ...
+            isnumeric(metaOverride.numSensors) && metaOverride.numSensors > 0
+        sourceNumSens = metaOverride.numSensors;
+    end
+end
 
 if height(T) < 10
     error("sensorRigData contains too few samples.");
@@ -72,11 +127,16 @@ end
 varNames = string(T.Properties.VariableNames);
 
 %% -------------------- GET NUMBER OF SENSORS --------------------
-if isprop(currentSimulationData, "numberOfAccSensors") && ~isempty(currentSimulationData.numberOfAccSensors)
-    NumSens = currentSimulationData.numberOfAccSensors;
+if ~isempty(numberOfSensorsOverride)
+    NumSens = numberOfSensorsOverride;
+elseif ~isempty(sourceNumSens)
+    NumSens = sourceNumSens;
 else
     NumSens = inferNumberOfSensors(varNames);
 end
+
+NumSens = double(NumSens);
+validateattributes(NumSens, {'numeric'}, {'scalar', 'integer', 'positive'}, mfilename, 'NumberOfSensors');
 
 if NumSens < 2
     error("At least two sensors are required: one input sensor and at least one output sensor.");
@@ -96,8 +156,10 @@ elseif ismember("t_matlab_elapsed_s", varNames)
     t = T.t_matlab_elapsed_s;
 else
     % Last fallback: use sampleRate if no timestamp is available.
-    if isprop(currentSimulationData, "sampleRate") && currentSimulationData.sampleRate > 0
-        fs0 = currentSimulationData.sampleRate;
+    if ~isempty(sampleRateOverride)
+        fs0 = sampleRateOverride;
+    elseif ~isempty(sourceSampleRate)
+        fs0 = sourceSampleRate;
     else
         error("No usable time vector found and no valid sampleRate available.");
     end
@@ -148,8 +210,27 @@ output_acc = output_acc(uniqueIdx,:);
 %% -------------------- RESAMPLE TO UNIFORM TIME GRID --------------------
 % tfestimate assumes uniformly sampled data. The Arduino timestamp is close
 % to uniform, but serial communication can introduce small timing jitter.
-dt = median(diff(t));
+nominalSampleRate = [];
+
+if ~isempty(sampleRateOverride)
+    nominalSampleRate = sampleRateOverride;
+elseif ~isempty(sourceSampleRate)
+    nominalSampleRate = sourceSampleRate;
+end
+
+if useNominalSampleRate && ~isempty(nominalSampleRate)
+    dt = 1 / nominalSampleRate;
+else
+    dt = median(diff(t));
+end
+
 fs = 1/dt;
+fNyquist = fs / 2;
+
+if fmax > fNyquist
+    error("FMax %.2f Hz is above the Nyquist frequency %.2f Hz. Use sampleRate > %.2f Hz or lower FMax.", ...
+        fmax, fNyquist, 2*fmax);
+end
 
 tUniform = (t(1):dt:t(end)).';
 inputUniform = interp1(t, input_signal, tUniform, "linear", "extrap");
@@ -166,11 +247,17 @@ if N < 64
     error("Too few samples for FRF estimation.");
 end
 
-nfft = 2^nextpow2(N);
+if isempty(windowDurationSeconds)
+    windowLength = round(N/8);
+else
+    windowLength = round(windowDurationSeconds * fs);
+end
 
-windowLength = round(N/8);
-windowLength = max(windowLength, 64);
+windowLength = max(windowLength, min(64, N));
 windowLength = min(windowLength, N);
+
+minNfftForResolution = ceil(fs / frequencyResolutionHz);
+nfft = 2^nextpow2(max(windowLength, minNfftForResolution));
 
 window = hann(windowLength);
 noverlap = round(0.5 * windowLength);
@@ -178,8 +265,10 @@ noverlap = round(0.5 * windowLength);
 nOutputs = size(outputUniform,2);
 
 %% -------------------- ESTIMATE FRFs AND COHERENCE --------------------
-H = [];
-coh = [];
+nFreq = floor(nfft/2) + 1;
+H = complex(nan(nFreq, nOutputs));
+coh = nan(nFreq, nOutputs);
+freq = nan(nFreq, 1);
 
 for ch = 1:nOutputs
 
@@ -221,7 +310,7 @@ end
 [pks, locsLocal] = findpeaks( ...
     envSearch, ...
     "MinPeakHeight", relativePeakLevel * maxValue, ...
-    "MinPeakDistance", round(minPeakDistanceHz / dfFRF));
+    "MinPeakDistance", max(1, round(minPeakDistanceHz / dfFRF)));
 
 locs = idxSearch(locsLocal);
 nPeaks = numel(pks);
@@ -401,12 +490,115 @@ results.settings.deltaFInterp = deltaFInterp;
 results.settings.fmin = fmin;
 results.settings.fmax = fmax;
 results.settings.useCorrectedSignals = useCorrectedSignals;
+results.settings.sampleRateOverride = sampleRateOverride;
+results.settings.numberOfSensorsOverride = numberOfSensorsOverride;
+results.settings.useNominalSampleRate = useNominalSampleRate;
+results.settings.nominalSampleRate = nominalSampleRate;
+results.settings.frequencyResolutionHz = frequencyResolutionHz;
+results.settings.actualFrequencySpacingHz = dfFRF;
+results.settings.fNyquist = fNyquist;
+results.settings.nfft = nfft;
+results.settings.windowLength = windowLength;
+results.settings.windowDurationSeconds = windowLength / fs;
+results.settings.overlapLength = noverlap;
 
 end
 
 %% ========================================================================
 % LOCAL HELPER FUNCTIONS
 % ========================================================================
+
+function [T, sourceSampleRate, sourceNumSens] = unpackSensorRigData(dataSource)
+
+sourceSampleRate = [];
+sourceNumSens = [];
+
+if istable(dataSource)
+    T = dataSource;
+    [sourceSampleRate, sourceNumSens] = readSensorTableUserData(T);
+    return;
+end
+
+if ~hasFieldOrProperty(dataSource, "sensorRigData")
+    error("Input must be a sensorRigData table or an object/struct with a sensorRigData field.");
+end
+
+T = getFieldOrProperty(dataSource, "sensorRigData");
+
+if isempty(T) || ~istable(T)
+    error("sensorRigData does not exist, is empty, or is not a table.");
+end
+
+[tableSampleRate, tableNumSens] = readSensorTableUserData(T);
+
+if hasFieldOrProperty(dataSource, "sampleRate")
+    sourceSampleRate = getFieldOrProperty(dataSource, "sampleRate");
+
+    if isempty(sourceSampleRate) || ~isnumeric(sourceSampleRate) || sourceSampleRate <= 0
+        sourceSampleRate = [];
+    end
+end
+
+if isempty(sourceSampleRate)
+    sourceSampleRate = tableSampleRate;
+end
+
+if hasFieldOrProperty(dataSource, "numberOfAccSensors")
+    sourceNumSens = getFieldOrProperty(dataSource, "numberOfAccSensors");
+
+    if isempty(sourceNumSens) || ~isnumeric(sourceNumSens) || sourceNumSens <= 0
+        sourceNumSens = [];
+    end
+end
+
+if isempty(sourceNumSens)
+    sourceNumSens = tableNumSens;
+end
+
+end
+
+function [sourceSampleRate, sourceNumSens] = readSensorTableUserData(T)
+
+sourceSampleRate = [];
+sourceNumSens = [];
+
+if ~isstruct(T.Properties.UserData) || ~isfield(T.Properties.UserData, "sampleRate")
+    return;
+end
+
+sampleRate = T.Properties.UserData.sampleRate;
+
+if isnumeric(sampleRate) && isscalar(sampleRate) && sampleRate > 0
+    sourceSampleRate = sampleRate;
+end
+
+if isfield(T.Properties.UserData, "numberOfSensors")
+    numberOfSensors = T.Properties.UserData.numberOfSensors;
+
+    if isnumeric(numberOfSensors) && isscalar(numberOfSensors) && numberOfSensors > 0
+        sourceNumSens = numberOfSensors;
+    end
+end
+
+end
+
+function tf = hasFieldOrProperty(dataSource, name)
+
+if isstruct(dataSource)
+    tf = isfield(dataSource, char(name));
+elseif isobject(dataSource)
+    tf = isprop(dataSource, char(name));
+else
+    tf = false;
+end
+
+end
+
+function value = getFieldOrProperty(dataSource, name)
+
+value = dataSource.(char(name));
+
+end
 
 function NumSens = inferNumberOfSensors(varNames)
 

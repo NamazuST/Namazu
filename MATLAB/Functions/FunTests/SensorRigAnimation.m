@@ -1,4 +1,15 @@
-T = TestSensorRigAnimation("y", "COM9", 5, 60);
+[T, validationMeanTable, meta] = TestSensorRigAnimation("y", "COM9", 1, 60, ...
+    "SampleRate", 250, ...
+    "Baud", 1000000, ...
+    "AnalysisOptions", {"FMax", 100, ...
+                        "FrequencyResolutionHz", 0.1, ...
+                        "WindowDurationSeconds", 20, ...
+                        "MinPeakDistanceHz", 15});
+
+fsActual = 1000 / median(diff(T.t_arduino_ms));
+disp(fsActual)
+
+EstimateEigenfrequencyFFT(T)
 
 function [sensorRigData, validationMeanTable, meta] = TestSensorRigAnimation(quantityOfInterest, port, NumSens, durationSeconds, varargin)
 % TestSensorRigAnimation
@@ -17,6 +28,10 @@ function [sensorRigData, validationMeanTable, meta] = TestSensorRigAnimation(qua
 %       "UseCorrectedData", true);
 %   [T, means, meta] = TestSensorRigAnimation("y", "COM9", 5, 30, ...
 %       "SaveData", true, "OutputFolder", "Measurements");
+%   [T, means, meta] = TestSensorRigAnimation("y", "COM9", 5, 30, ...
+%       "RunAnalysis", true);
+%   [T, means, meta] = TestSensorRigAnimation("y", "COM9", 5, 60, ...
+%       "AnalysisOptions", {"FMax", 100, "FrequencyResolutionHz", 0.25});
 %
 % SaveData defaults to true when the function is called without output
 % arguments, and false when the output table is assigned.
@@ -39,13 +54,16 @@ end
 
 parser = inputParser;
 parser.FunctionName = mfilename;
-addParameter(parser, "Baud", 115200, @(x) isnumeric(x) && isscalar(x) && x > 0);
-addParameter(parser, "SampleRate", 100, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "Baud", 1000000, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "SampleRate", 250, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "PlotWindowSeconds", 10, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "UseCorrectedData", false, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "SaveData", [], @(x) isempty(x) || islogical(x) || isnumeric(x));
 addParameter(parser, "OutputFolder", pwd, @(x) ischar(x) || isstring(x));
 addParameter(parser, "Verbose", true, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, "RunAnalysis", true, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, "AnalysisDirection", [], @(x) isempty(x) || ischar(x) || isstring(x));
+addParameter(parser, "AnalysisOptions", {"FMax", 100, "FrequencyResolutionHz", 0.25}, @(x) iscell(x));
 parse(parser, varargin{:});
 
 baud = parser.Results.Baud;
@@ -61,6 +79,9 @@ end
 
 outputFolder = string(parser.Results.OutputFolder);
 verbose = logical(parser.Results.Verbose);
+runAnalysis = logical(parser.Results.RunAnalysis);
+analysisDirection = parser.Results.AnalysisDirection;
+analysisOptions = parser.Results.AnalysisOptions;
 
 validateattributes(NumSens, {'numeric'}, {'scalar', 'integer', 'positive'}, mfilename, 'NumSens');
 validateattributes(durationSeconds, {'numeric'}, {'scalar', 'positive'}, mfilename, 'durationSeconds');
@@ -233,6 +254,10 @@ validationMeanTable.Sensor = (1:NumSens).';
 validationMeanTable = movevars(validationMeanTable, "Sensor", "Before", 1);
 
 sensorRigData = addCorrectedAccelerationColumns(sensorRigData, validationMeans, NumSens);
+sensorRigData.Properties.UserData.sampleRate = sampleRate;
+sensorRigData.Properties.UserData.numberOfSensors = NumSens;
+sensorRigData.Properties.UserData.baud = baud;
+sensorRigData.Properties.UserData.port = port;
 
 %% -------------------- METADATA AND OPTIONAL SAVE --------------------
 meta = struct();
@@ -245,6 +270,30 @@ meta.durationSecondsMeasured = elapsedSeconds;
 meta.quantityOfInterest = string(quantityOfInterest);
 meta.useCorrectedDataForPlot = useCorrectedData;
 meta.outputFile = "";
+meta.analysisResults = [];
+meta.analysisError = "";
+meta.analysisDirection = "";
+
+if runAnalysis && ~isempty(sensorRigData) && height(sensorRigData) > 0
+
+    if isempty(analysisDirection)
+        analysisDirection = defaultAnalysisDirection(quantityIndex);
+    end
+
+    meta.analysisDirection = string(analysisDirection);
+
+    try
+        meta.analysisResults = EstimateEigenfrequencyFRF(sensorRigData, ...
+            "Direction", analysisDirection, ...
+            "SampleRate", sampleRate, ...
+            "NumberOfSensors", NumSens, ...
+            analysisOptions{:});
+    catch ME
+        meta.analysisError = string(ME.message);
+        warningMessage = ['FRF analysis failed: ' ME.message];
+        warning('%s', warningMessage);
+    end
+end
 
 if saveData
     if ~isfolder(outputFolder)
@@ -262,6 +311,13 @@ end
 if verbose
     fprintf("Recorded %d valid samples from %d sensors.\n", height(sensorRigData), NumSens);
 end
+
+end
+
+function analysisDirection = defaultAnalysisDirection(quantityIndex)
+
+directions = ["x", "y", "z", "y"];
+analysisDirection = directions(quantityIndex);
 
 end
 

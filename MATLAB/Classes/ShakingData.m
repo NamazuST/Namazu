@@ -17,8 +17,8 @@ classdef ShakingData
         numberOfAccSensors double = 5;     % How many sensors are attached
     
         accelerationSensorPort string = "COM9";
-        accelerationSensorBaud double = 115200;
-        accelerationSensorSampleRate double = 100;
+        accelerationSensorBaud double = 921600;
+        accelerationSensorSampleRate double = 250;
     
         sensorRigData table;
         sensorRigValidationMeans table;
