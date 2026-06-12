@@ -22,9 +22,9 @@ parser.FunctionName = mfilename;
 
 addParameter(parser, "Port", "COM9", @(x) ischar(x) || isstring(x));
 addParameter(parser, "Baud", 1000000, @(x) isnumeric(x) && isscalar(x) && x > 0);
-addParameter(parser, "NumSensors", 5, @(x) isnumeric(x) && isscalar(x) && x > 0);
-addParameter(parser, "SampleRate", 250, @(x) isnumeric(x) && isscalar(x) && x > 0);
-addParameter(parser, "DurationSeconds", 12, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "NumSensors", 1, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "SampleRate", 500, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "DurationSeconds", 15, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "Direction", "y", @(x) ischar(x) || isstring(x));
 addParameter(parser, "UseCorrectedData", false, @(x) islogical(x) || isnumeric(x));
 
@@ -72,7 +72,7 @@ verbose = logical(parser.Results.Verbose);
 [quantityIndex, quantityLabel] = parseQuantityOfInterest(direction);
 
 if strlength(folderName) == 0
-    todayText = char(datetime("now", "Format", "yyyy-MM-dd-mm-ss"));
+    todayText = char(datetime("now", "Format", "yyyy-MM-dd-HH-mm-ss"));
     folderName = string(todayText)+"-hammer-test";
 end
 
