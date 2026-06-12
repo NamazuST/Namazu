@@ -3,6 +3,8 @@
 
 # We do not want to store all the .mat files and the MarvCode
 MATLAB/MarvCode/
+# We do not want to store any .mat file
+*.mat
 
 # OSX / *nix default autosave extension
 *.m~

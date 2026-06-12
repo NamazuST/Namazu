@@ -72,7 +72,7 @@ verbose = logical(parser.Results.Verbose);
 [quantityIndex, quantityLabel] = parseQuantityOfInterest(direction);
 
 if strlength(folderName) == 0
-    todayText = char(datetime("now", "Format", "yyyy-MM-dd-mm:ss"));
+    todayText = char(datetime("now", "Format", "yyyy-MM-dd-mm-ss"));
     folderName = string(todayText)+"-hammer-test";
 end
 

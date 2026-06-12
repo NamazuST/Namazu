@@ -33,7 +33,7 @@ addParameter(parser, "Meta", [], @(x) isempty(x) || isstruct(x));
 addParameter(parser, "Gravity", 9.81, @(x) isnumeric(x) && isscalar(x) && x > 0);
 
 addParameter(parser, "FMin", 0.5, @(x) isnumeric(x) && isscalar(x) && x >= 0);
-addParameter(parser, "FMax", 70, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "FMax", 100, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "FrequencyResolutionHz", [], @(x) isempty(x) || ...
     (isnumeric(x) && isscalar(x) && x > 0));
 addParameter(parser, "RelativePeakLevel", 0.03, @(x) isnumeric(x) && isscalar(x) && x >= 0);
