@@ -14,6 +14,7 @@ function state = LiveSingleSensorFFTMonitor(varargin)
 %   state = LiveSingleSensorFFTMonitor("Port", "COM9", "Direction", "y");
 %   state = LiveSingleSensorFFTMonitor("FFTWindowSeconds", 12, ...
 %       "FMax", 100, "MaxPeaks", 4);
+%   state = LiveSingleSensorFFTMonitor("SerialTimeout", 2.0);
 
 parser = inputParser;
 parser.FunctionName = mfilename;
@@ -23,6 +24,7 @@ addParameter(parser, "Baud", 1000000, @(x) isnumeric(x) && isscalar(x) && x > 0)
 addParameter(parser, "Direction", "y", @(x) ischar(x) || isstring(x));
 addParameter(parser, "UseCorrectedData", true, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "NominalSampleRate", 500, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "SerialTimeout", 2.0, @(x) isnumeric(x) && isscalar(x) && x > 0);
 
 addParameter(parser, "PlotWindowSeconds", 10, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "FFTWindowSeconds", 10, @(x) isnumeric(x) && isscalar(x) && x > 0);
@@ -45,6 +47,7 @@ baud = parser.Results.Baud;
 direction = lower(strtrim(string(parser.Results.Direction)));
 useCorrectedData = logical(parser.Results.UseCorrectedData);
 nominalSampleRate = parser.Results.NominalSampleRate;
+serialTimeout = parser.Results.SerialTimeout;
 
 plotWindowSeconds = parser.Results.PlotWindowSeconds;
 fftWindowSeconds = parser.Results.FFTWindowSeconds;
@@ -73,7 +76,7 @@ ui = setupMonitorFigure(quantityLabel, quantityUnitLabel, plotWindowSeconds, fft
 fprintf("Opening top-sensor serial port %s at %d baud...\n", port, baud);
 s = serialport(port, baud);
 configureTerminator(s, "CR/LF");
-s.Timeout = 0.25;
+s.Timeout = serialTimeout;
 cleanupObj = onCleanup(@() cleanupSensorSerial(s));
 
 flush(s);
@@ -245,7 +248,21 @@ end
 function line = readSerialLineNoThrow(s)
 
 try
-    line = string(readline(s));
+    rawLine = readline(s);
+
+    if isempty(rawLine)
+        line = "";
+        return;
+    end
+
+    line = string(rawLine);
+
+    if isempty(line) || ismissing(line(1))
+        line = "";
+        return;
+    end
+
+    line = strtrim(line(1));
 catch
     line = "";
 end
@@ -641,12 +658,19 @@ function [isData, vals, validationMeans, currentValidationSensor] = ...
 isData = false;
 vals = [];
 
-line = strtrim(string(line));
-lineChar = char(line);
+line = string(line);
+
+if isempty(line) || ismissing(line(1))
+    return;
+end
+
+line = strtrim(line(1));
 
 if strlength(line) == 0
     return;
 end
+
+lineChar = char(line);
 
 sensorToken = regexp(lineChar, '^Sensor\s+(\d+):$', 'tokens', 'once');
 
