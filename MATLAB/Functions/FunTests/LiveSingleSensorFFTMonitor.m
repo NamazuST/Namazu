@@ -15,6 +15,10 @@ function state = LiveSingleSensorFFTMonitor(varargin)
 %   state = LiveSingleSensorFFTMonitor("FFTWindowSeconds", 12, ...
 %       "FMax", 100, "MaxPeaks", 4);
 %   state = LiveSingleSensorFFTMonitor("SerialTimeout", 2.0);
+%
+% The upper plot shows the maximum absolute acceleration inside the current
+% FFTWindowSeconds window. When the monitor stops, the terminal receives a
+% short summary of dominant frequencies and maximum accelerations.
 
 parser = inputParser;
 parser.FunctionName = mfilename;
@@ -39,6 +43,7 @@ addParameter(parser, "RelativePeakLevel", 0.05, @(x) isnumeric(x) && isscalar(x)
 addParameter(parser, "MinPeakDistanceHz", 10, @(x) isnumeric(x) && isscalar(x) && x >= 0);
 addParameter(parser, "MaxPeaks", 4, @(x) isnumeric(x) && isscalar(x) && x > 0 && mod(x, 1) == 0);
 addParameter(parser, "MinFFTSamples", 128, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "DominantFrequencyToleranceHz", 1.0, @(x) isnumeric(x) && isscalar(x) && x > 0);
 
 parse(parser, varargin{:});
 
@@ -62,8 +67,10 @@ fftSettings.relativePeakLevel = parser.Results.RelativePeakLevel;
 fftSettings.minPeakDistanceHz = parser.Results.MinPeakDistanceHz;
 fftSettings.maxPeaks = parser.Results.MaxPeaks;
 fftSettings.minFFTSamples = parser.Results.MinFFTSamples;
+fftSettings.dominantFrequencyToleranceHz = parser.Results.DominantFrequencyToleranceHz;
 
 [quantityIndex, quantityLabel, quantityUnitLabel] = parseQuantityOfInterest(direction);
+accelerationSymbol = accelerationSymbolFromDirection(direction);
 
 portList = serialportlist("available");
 
@@ -71,7 +78,12 @@ if ~any(strcmp(string(portList), port))
     error("Sensor port %s not found/open or port is in use. Check USB connection.", port);
 end
 
-ui = setupMonitorFigure(quantityLabel, quantityUnitLabel, plotWindowSeconds, fftSettings);
+ui = setupMonitorFigure( ...
+    quantityLabel, ...
+    quantityUnitLabel, ...
+    accelerationSymbol, ...
+    plotWindowSeconds, ...
+    fftSettings);
 
 fprintf("Opening top-sensor serial port %s at %d baud...\n", port, baud);
 s = serialport(port, baud);
@@ -115,6 +127,8 @@ totalSamples = 0;
 lastPlotUpdate = -Inf;
 lastFFTUpdate = -Inf;
 lastFFTResult = createEmptyFFTResult();
+peakHistory = createEmptyPeakHistory();
+globalAccelerationStats = createEmptyAccelerationStats();
 loopTimer = tic;
 dataModeLabel = "raw";
 maxBufferSeconds = max(plotWindowSeconds, fftWindowSeconds) + 5;
@@ -151,6 +165,8 @@ while isvalid(ui.figure) && ~getappdata(ui.figure, 'StopRequested')
             tBuffer(end + 1, 1) = tSeconds; %#ok<AGROW>
             yBuffer(end + 1, 1) = yValue; %#ok<AGROW>
             totalSamples = totalSamples + 1;
+            globalAccelerationStats = updateGlobalAccelerationStats( ...
+                globalAccelerationStats, tSeconds, yValue);
 
             keep = tBuffer >= max(0, tSeconds - maxBufferSeconds);
             tBuffer = tBuffer(keep);
@@ -160,12 +176,20 @@ while isvalid(ui.figure) && ~getappdata(ui.figure, 'StopRequested')
 
     if loopSeconds - lastPlotUpdate >= plotUpdateSeconds
         ui = updateAccelerationPlot( ...
-            ui, tBuffer, yBuffer, plotWindowSeconds, dataModeLabel, nominalSampleRate);
+            ui, ...
+            tBuffer, ...
+            yBuffer, ...
+            plotWindowSeconds, ...
+            dataModeLabel, ...
+            nominalSampleRate, ...
+            fftWindowSeconds, ...
+            lastFFTResult.accelerationStats);
         lastPlotUpdate = loopSeconds;
     end
 
     if loopSeconds - lastFFTUpdate >= fftUpdateSeconds
         lastFFTResult = computeSlidingFFT(tBuffer, yBuffer, fftWindowSeconds, fftSettings);
+        peakHistory = appendPeakHistory(peakHistory, lastFFTResult);
         ui = updateFFTPlot(ui, lastFFTResult, fftWindowSeconds, fftSettings);
         lastFFTUpdate = loopSeconds;
     end
@@ -177,15 +201,23 @@ state = struct();
 state.port = port;
 state.baud = baud;
 state.direction = direction;
+state.accelerationSymbol = accelerationSymbol;
 state.useCorrectedData = useCorrectedData;
 state.nominalSampleRate = nominalSampleRate;
 state.totalSamples = totalSamples;
 state.stoppedAt = datetime("now", "TimeZone", "local");
 state.lastFFT = lastFFTResult;
 state.validationMeans = validationMeans;
+state.accelerationStats = globalAccelerationStats;
+state.peakHistory = peakHistory;
+state.dominantFrequencies = summarizeDominantFrequencies( ...
+    peakHistory, ...
+    fftSettings.dominantFrequencyToleranceHz, ...
+    fftSettings.maxPeaks);
 
 clear cleanupObj
 fprintf("Live FFT monitor stopped. Samples read: %d\n", totalSamples);
+printStopSummary(state, fftWindowSeconds, fftSettings);
 
 end
 
@@ -193,9 +225,11 @@ end
 % LOCAL HELPER FUNCTIONS
 % ========================================================================
 
-function ui = setupMonitorFigure(quantityLabel, quantityUnitLabel, plotWindowSeconds, fftSettings)
+function ui = setupMonitorFigure(quantityLabel, quantityUnitLabel, accelerationSymbol, ...
+    plotWindowSeconds, fftSettings)
 
 ui = struct();
+ui.accelerationSymbol = accelerationSymbol;
 ui.figure = figure("Name", "Live top-sensor FFT monitor", "NumberTitle", "off");
 setappdata(ui.figure, 'StopRequested', false);
 ui.figure.KeyPressFcn = @keyPressStop;
@@ -212,6 +246,15 @@ xlabel(ui.accelerationAxes, "Arduino elapsed time [s]");
 ylabel(ui.accelerationAxes, quantityUnitLabel, "Interpreter", "none");
 title(ui.accelerationAxes, sprintf("%s acceleration, last %.1f s", ...
     quantityLabel, plotWindowSeconds), "Interpreter", "none");
+ui.accelerationStatsText = text(ui.accelerationAxes, ...
+    0.015, ...
+    0.94, ...
+    "FFT-window max |" + accelerationSymbol + "|: waiting", ...
+    "Units", "normalized", ...
+    "VerticalAlignment", "top", ...
+    "Interpreter", "none", ...
+    "BackgroundColor", [1 1 1], ...
+    "Margin", 4);
 
 ui.fftAxes = nexttile(layout, 2);
 ui.fftLine = plot(ui.fftAxes, NaN, NaN, ...
@@ -299,6 +342,23 @@ end
 
 end
 
+function accelerationSymbol = accelerationSymbolFromDirection(direction)
+
+switch lower(strtrim(string(direction)))
+    case "x"
+        accelerationSymbol = "a_x";
+    case "y"
+        accelerationSymbol = "a_y";
+    case "z"
+        accelerationSymbol = "a_z";
+    case "mag"
+        accelerationSymbol = "|a|";
+    otherwise
+        accelerationSymbol = "a";
+end
+
+end
+
 function [y, dataModeLabel] = selectAccelerationValue(vals, quantityIndex, validationMeans, useCorrectedData)
 
 baseIndex = 2;
@@ -332,7 +392,8 @@ end
 
 end
 
-function ui = updateAccelerationPlot(ui, tBuffer, yBuffer, plotWindowSeconds, dataModeLabel, nominalSampleRate)
+function ui = updateAccelerationPlot(ui, tBuffer, yBuffer, plotWindowSeconds, ...
+    dataModeLabel, nominalSampleRate, fftWindowSeconds, accelerationStats)
 
 if isempty(tBuffer)
     return;
@@ -368,8 +429,23 @@ else
     fsText = sprintf("nominal Fs %.1f Hz", nominalSampleRate);
 end
 
-title(ui.accelerationAxes, sprintf("Y acceleration (%s), last %.1f s, %s", ...
-    dataModeLabel, plotWindowSeconds, fsText), "Interpreter", "none");
+title(ui.accelerationAxes, sprintf("%s (%s), last %.1f s, %s", ...
+    ui.accelerationSymbol, dataModeLabel, plotWindowSeconds, fsText), "Interpreter", "none");
+
+if isgraphics(ui.accelerationStatsText)
+    if isfinite(accelerationStats.maxAbsG)
+        ui.accelerationStatsText.String = sprintf( ...
+            "max |%s| over last %.1f s: %.5f g at t = %.2f s", ...
+            ui.accelerationSymbol, ...
+            fftWindowSeconds, ...
+            accelerationStats.maxAbsG, ...
+            accelerationStats.maxAbsTime);
+    else
+        ui.accelerationStatsText.String = sprintf( ...
+            "max |%s| over last %.1f s: waiting", ...
+            ui.accelerationSymbol, fftWindowSeconds);
+    end
+end
 
 end
 
@@ -390,6 +466,11 @@ y = yBuffer(idx);
 validRows = isfinite(t) & isfinite(y);
 t = t(validRows);
 y = y(validRows);
+
+if ~isempty(t)
+    result.accelerationStats = computeAccelerationStats(t, y);
+    result.windowEndTime = t(end);
+end
 
 if numel(t) < settings.minFFTSamples
     result.status = sprintf("Waiting for at least %d samples", settings.minFFTSamples);
@@ -485,6 +566,7 @@ result.df = df;
 result.fNyquist = fNyquist;
 result.fMaxUsed = fMaxUsed;
 result.windowSeconds = tUniform(end) - tUniform(1);
+result.windowEndTime = tUniform(end);
 result.nSamples = nSamples;
 result.nFFT = nFFT;
 
@@ -502,9 +584,259 @@ result.df = NaN;
 result.fNyquist = NaN;
 result.fMaxUsed = NaN;
 result.windowSeconds = NaN;
+result.windowEndTime = NaN;
 result.nSamples = 0;
 result.nFFT = 0;
 result.status = "Waiting for data";
+result.accelerationStats = createEmptyAccelerationStats();
+
+end
+
+function stats = createEmptyAccelerationStats()
+
+stats = struct();
+stats.sampleCount = 0;
+stats.maxAbsG = NaN;
+stats.maxAbsTime = NaN;
+stats.valueAtMaxAbsG = NaN;
+stats.maxG = NaN;
+stats.maxTime = NaN;
+stats.minG = NaN;
+stats.minTime = NaN;
+stats.rmsG = NaN;
+stats.sumSquaresG2 = 0;
+
+end
+
+function stats = updateGlobalAccelerationStats(stats, t, y)
+
+if ~isfinite(t) || ~isfinite(y)
+    return;
+end
+
+stats.sampleCount = stats.sampleCount + 1;
+stats.sumSquaresG2 = stats.sumSquaresG2 + y^2;
+stats.rmsG = sqrt(stats.sumSquaresG2 / stats.sampleCount);
+
+if ~isfinite(stats.maxAbsG) || abs(y) > stats.maxAbsG
+    stats.maxAbsG = abs(y);
+    stats.maxAbsTime = t;
+    stats.valueAtMaxAbsG = y;
+end
+
+if ~isfinite(stats.maxG) || y > stats.maxG
+    stats.maxG = y;
+    stats.maxTime = t;
+end
+
+if ~isfinite(stats.minG) || y < stats.minG
+    stats.minG = y;
+    stats.minTime = t;
+end
+
+end
+
+function stats = computeAccelerationStats(t, y)
+
+stats = createEmptyAccelerationStats();
+
+t = double(t(:));
+y = double(y(:));
+validRows = isfinite(t) & isfinite(y);
+t = t(validRows);
+y = y(validRows);
+
+if isempty(y)
+    return;
+end
+
+stats.sampleCount = numel(y);
+stats.sumSquaresG2 = sum(y.^2);
+stats.rmsG = sqrt(mean(y.^2));
+
+[stats.maxAbsG, idxAbs] = max(abs(y));
+stats.valueAtMaxAbsG = y(idxAbs);
+stats.maxAbsTime = t(idxAbs);
+
+[stats.maxG, idxMax] = max(y);
+stats.maxTime = t(idxMax);
+
+[stats.minG, idxMin] = min(y);
+stats.minTime = t(idxMin);
+
+end
+
+function history = createEmptyPeakHistory()
+
+history = struct();
+history.freqHz = zeros(0, 1);
+history.amplitude = zeros(0, 1);
+history.windowEndTime = zeros(0, 1);
+history.windowsAnalyzed = 0;
+
+end
+
+function history = appendPeakHistory(history, result)
+
+if ~isempty(result.freq) && ~isempty(result.fftAbs)
+    history.windowsAnalyzed = history.windowsAnalyzed + 1;
+end
+
+if isempty(result.peakFreqHz)
+    return;
+end
+
+freq = result.peakFreqHz(:);
+amplitude = result.peakAmplitude(:);
+validRows = isfinite(freq) & isfinite(amplitude);
+freq = freq(validRows);
+amplitude = amplitude(validRows);
+
+if isempty(freq)
+    return;
+end
+
+nPeaks = numel(freq);
+history.freqHz = [history.freqHz; freq];
+history.amplitude = [history.amplitude; amplitude];
+history.windowEndTime = [history.windowEndTime; repmat(result.windowEndTime, nPeaks, 1)];
+
+end
+
+function dominant = summarizeDominantFrequencies(history, toleranceHz, maxPeaks)
+
+dominant = table( ...
+    zeros(0, 1), ...
+    zeros(0, 1), ...
+    zeros(0, 1), ...
+    zeros(0, 1), ...
+    zeros(0, 1), ...
+    zeros(0, 1), ...
+    'VariableNames', {'FrequencyHz', 'Count', 'MeanAmplitude', ...
+    'MaxAmplitude', 'Score', 'LastSeenTime'});
+
+freq = history.freqHz(:);
+amplitude = history.amplitude(:);
+windowEndTime = history.windowEndTime(:);
+validRows = isfinite(freq) & isfinite(amplitude);
+freq = freq(validRows);
+amplitude = amplitude(validRows);
+windowEndTime = windowEndTime(validRows);
+
+if isempty(freq)
+    return;
+end
+
+[freq, order] = sort(freq);
+amplitude = amplitude(order);
+windowEndTime = windowEndTime(order);
+
+clusterFrequency = [];
+clusterCount = [];
+clusterMeanAmplitude = [];
+clusterMaxAmplitude = [];
+clusterScore = [];
+clusterLastSeenTime = [];
+
+iStart = 1;
+
+while iStart <= numel(freq)
+    iEnd = iStart;
+    currentCenter = freq(iStart);
+
+    while iEnd < numel(freq) && abs(freq(iEnd + 1) - currentCenter) <= toleranceHz
+        iEnd = iEnd + 1;
+        currentCenter = median(freq(iStart:iEnd));
+    end
+
+    idx = iStart:iEnd;
+    weights = amplitude(idx);
+
+    if sum(weights) > 0
+        frequency = sum(freq(idx) .* weights) / sum(weights);
+    else
+        frequency = mean(freq(idx));
+    end
+
+    count = numel(idx);
+    meanAmplitude = mean(amplitude(idx));
+    maxAmplitude = max(amplitude(idx));
+    score = count * meanAmplitude;
+    lastSeenTime = max(windowEndTime(idx));
+
+    clusterFrequency(end + 1, 1) = frequency; %#ok<AGROW>
+    clusterCount(end + 1, 1) = count; %#ok<AGROW>
+    clusterMeanAmplitude(end + 1, 1) = meanAmplitude; %#ok<AGROW>
+    clusterMaxAmplitude(end + 1, 1) = maxAmplitude; %#ok<AGROW>
+    clusterScore(end + 1, 1) = score; %#ok<AGROW>
+    clusterLastSeenTime(end + 1, 1) = lastSeenTime; %#ok<AGROW>
+
+    iStart = iEnd + 1;
+end
+
+[~, order] = sort(clusterScore, "descend");
+order = order(1:min(maxPeaks, numel(order)));
+
+dominant = table( ...
+    clusterFrequency(order), ...
+    clusterCount(order), ...
+    clusterMeanAmplitude(order), ...
+    clusterMaxAmplitude(order), ...
+    clusterScore(order), ...
+    clusterLastSeenTime(order), ...
+    'VariableNames', {'FrequencyHz', 'Count', 'MeanAmplitude', ...
+    'MaxAmplitude', 'Score', 'LastSeenTime'});
+
+dominant = sortrows(dominant, "FrequencyHz");
+
+end
+
+function printStopSummary(state, fftWindowSeconds, settings)
+
+fprintf("\nLive FFT monitor summary\n");
+fprintf("  Samples read: %d\n", state.totalSamples);
+fprintf("  FFT windows analyzed: %d\n", state.peakHistory.windowsAnalyzed);
+
+stats = state.accelerationStats;
+accelerationSymbol = state.accelerationSymbol;
+
+if stats.sampleCount > 0
+    fprintf("  Acceleration extrema over complete run:\n");
+    fprintf("    max |%s| = %.6f g at t = %.3f s (value %+0.6f g)\n", ...
+        accelerationSymbol, stats.maxAbsG, stats.maxAbsTime, stats.valueAtMaxAbsG);
+    fprintf("    max  %s  = %+0.6f g at t = %.3f s\n", ...
+        accelerationSymbol, stats.maxG, stats.maxTime);
+    fprintf("    min  %s  = %+0.6f g at t = %.3f s\n", ...
+        accelerationSymbol, stats.minG, stats.minTime);
+    fprintf("    rms  %s  = %.6f g\n", accelerationSymbol, stats.rmsG);
+else
+    fprintf("  No valid acceleration samples were collected.\n");
+end
+
+dominant = state.dominantFrequencies;
+
+if isempty(dominant)
+    fprintf("  No dominant frequencies were identified.\n");
+else
+    fprintf("  Dominant frequencies, clustered within %.2f Hz:\n", ...
+        settings.dominantFrequencyToleranceHz);
+
+    for iMode = 1:height(dominant)
+        fprintf("    %2d: f = %9.4f Hz, seen %3d times, mean |FFT| = %.6g, max |FFT| = %.6g\n", ...
+            iMode, ...
+            dominant.FrequencyHz(iMode), ...
+            dominant.Count(iMode), ...
+            dominant.MeanAmplitude(iMode), ...
+            dominant.MaxAmplitude(iMode));
+    end
+end
+
+if isfinite(state.lastFFT.accelerationStats.maxAbsG)
+    fprintf("  Last %.2f s window max |%s|: %.6f g\n", ...
+        fftWindowSeconds, accelerationSymbol, state.lastFFT.accelerationStats.maxAbsG);
+end
+
+fprintf("\n");
 
 end
 
