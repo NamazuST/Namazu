@@ -3,6 +3,9 @@
 
 # We do not want to store all the .mat files and the MarvCode
 MATLAB/MarvCode/
+MATLAB/Experiments/Hammer-Test/
+Sensors/sensor_rig_esp32/.vscode/
+
 # We do not want to store any .mat file
 *.mat
 

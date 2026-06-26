@@ -15,6 +15,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <math.h>
+#include <string.h>
 
 /* ================= USER SETTINGS ================= */
 
@@ -24,7 +25,14 @@ static constexpr uint8_t NUM_SENSORS = 5;
 static_assert(NUM_SENSORS >= 1, "NUM_SENSORS must be at least 1.");
 static_assert(NUM_SENSORS <= MAX_SENSORS, "NUM_SENSORS exceeds MAX_SENSORS.");
 
-// Classic ESP32-WROOM defaults. Avoid GPIO6-GPIO11: they are used for flash.
+// Classic ESP32-WROOM defaults. Boards labelled with D names usually map
+// D13 -> GPIO13, D14 -> GPIO14, D25 -> GPIO25, etc.
+//
+// If your board exposes RX2/TX2 but not D13/D14, use this alternative:
+//   static constexpr int AD0_PINS[MAX_SENSORS] = {16, 17, 25, 26, 27};
+//
+// Avoid GPIO6-GPIO11: they are used for flash. Avoid GPIO34-GPIO39 for AD0:
+// they are input-only and cannot drive the MPU6050 address pin.
 static constexpr int I2C_SDA_PIN = 21;
 static constexpr int I2C_SCL_PIN = 22;
 static constexpr int AD0_PINS[MAX_SENSORS] = {13, 14, 25, 26, 27};
@@ -39,6 +47,15 @@ static constexpr uint32_t AD0_SETTLE_US = 20;
 
 // Set false after the rig is proven if you want a faster boot.
 static constexpr bool RUN_STATIC_VALIDATION = true;
+
+// Prints a short address-selection check before MPU initialization.
+static constexpr bool RUN_I2C_DIAGNOSTIC = true;
+
+// Gives you time to copy the startup diagnostic before live data starts.
+static constexpr uint32_t STARTUP_LOG_HOLD_MS = 3000;
+
+// Set true while debugging if you want the rig to wait for "start" over serial.
+static constexpr bool WAIT_FOR_START_COMMAND = false;
 
 // Set false if serial throughput becomes the limiting factor.
 static constexpr bool PRINT_MAGNITUDE = true;
@@ -74,6 +91,10 @@ static int16_t azRaw[MAX_SENSORS] = {0};
 
 static uint32_t nextSampleUs = 0;
 static uint32_t overrunCount = 0;
+static bool liveStreamingPaused = false;
+
+static char serialCommand[32] = {0};
+static uint8_t serialCommandLength = 0;
 
 /* ============== LOW-LEVEL HELPERS ============== */
 
@@ -96,6 +117,12 @@ static bool writeByte(uint8_t reg, uint8_t value)
     Wire.beginTransmission(MPU_ADDR);
     Wire.write(reg);
     Wire.write(value);
+    return Wire.endTransmission(true) == 0;
+}
+
+static bool i2cAddressResponds(uint8_t address)
+{
+    Wire.beginTransmission(address);
     return Wire.endTransmission(true) == 0;
 }
 
@@ -133,6 +160,26 @@ static bool readByte(uint8_t reg, uint8_t &value)
     }
 
     value = buffer[0];
+    return true;
+}
+
+static bool readByteFromAddress(uint8_t address, uint8_t reg, uint8_t &value)
+{
+    Wire.beginTransmission(address);
+    Wire.write(reg);
+
+    if (Wire.endTransmission(false) != 0) {
+        return false;
+    }
+
+    if (Wire.requestFrom(address, static_cast<uint8_t>(1), static_cast<uint8_t>(true)) != 1) {
+        while (Wire.available()) {
+            Wire.read();
+        }
+        return false;
+    }
+
+    value = Wire.read();
     return true;
 }
 
@@ -178,8 +225,9 @@ static bool initializeMPU(uint8_t id)
     uint8_t whoAmI = 0;
     ok = ok && readByte(REG_WHO_AM_I, whoAmI);
 
-    // Most MPU6050 boards return 0x68. Some compatible chips return 0x70.
-    ok = ok && (whoAmI == 0x68 || whoAmI == 0x70);
+    // Most MPU6050 boards return 0x68. Common compatible modules have also
+    // been seen returning 0x70 or 0x72 while using the same accel registers.
+    ok = ok && (whoAmI == 0x68 || whoAmI == 0x70 || whoAmI == 0x72);
 
     return ok;
 }
@@ -274,6 +322,162 @@ static void printSettings()
     }
 
     Serial.println();
+}
+
+static void printAddressStatus()
+{
+    uint8_t who68 = 0;
+    uint8_t who69 = 0;
+    const bool found68 = i2cAddressResponds(0x68);
+    const bool found69 = i2cAddressResponds(0x69);
+    const bool gotWho68 = found68 && readByteFromAddress(0x68, REG_WHO_AM_I, who68);
+    const bool gotWho69 = found69 && readByteFromAddress(0x69, REG_WHO_AM_I, who69);
+
+    Serial.print("0x68=");
+    Serial.print(found68 ? "ACK" : "--");
+    if (gotWho68) {
+        Serial.print("(WHO=0x");
+        if (who68 < 0x10) Serial.print('0');
+        Serial.print(who68, HEX);
+        Serial.print(")");
+    }
+    Serial.print(", 0x69=");
+    Serial.print(found69 ? "ACK" : "--");
+    if (gotWho69) {
+        Serial.print("(WHO=0x");
+        if (who69 < 0x10) Serial.print('0');
+        Serial.print(who69, HEX);
+        Serial.print(")");
+    }
+    Serial.println();
+}
+
+static void runI2CDiagnostic()
+{
+    uint8_t selectedCount = 0;
+
+    Serial.println();
+    Serial.println("==============================================");
+    Serial.println("I2C / AD0 DIAGNOSTIC");
+    Serial.println("Expected with all sensors wired:");
+    Serial.println("  parked high: 0x68=--, 0x69=ACK");
+    Serial.println("  selected S#: 0x68=ACK");
+    Serial.println("If parked high still shows 0x68=ACK, at least one AD0");
+    Serial.println("line is not wired, is shorted to GND, or cannot be driven.");
+    Serial.println("==============================================");
+
+    parkAllSensors();
+    delay(5);
+    Serial.print("All AD0 high / parked: ");
+    printAddressStatus();
+
+    for (uint8_t i = 0; i < NUM_SENSORS; ++i) {
+        selectMPU(i);
+        Serial.print("Selected sensor ");
+        Serial.print(i + 1);
+        Serial.print(" on AD0 GPIO ");
+        Serial.print(AD0_PINS[i]);
+        Serial.print(": ");
+        printAddressStatus();
+
+        if (i2cAddressResponds(0x68)) {
+            ++selectedCount;
+        }
+
+    }
+
+    parkAllSensors();
+
+    if (NUM_SENSORS > 1 && selectedCount > 0 && selectedCount < NUM_SENSORS) {
+        Serial.println();
+        Serial.print("Hint: only ");
+        Serial.print(selectedCount);
+        Serial.print(" of ");
+        Serial.print(NUM_SENSORS);
+        Serial.println(" configured AD0 lines selected an MPU6050.");
+        Serial.println("If you expect more sensors, check VCC/GND/SDA/SCL and");
+        Serial.println("AD0 wiring for the sensors that never become 0x68.");
+    }
+
+    if (selectedCount == 0) {
+        Serial.println();
+        Serial.println("Hint: no sensor became address 0x68. Check AD0 wiring and");
+        Serial.println("whether the configured AD0 GPIO numbers match board labels.");
+    }
+
+    Serial.println("Diagnostic finished.");
+    Serial.println();
+}
+
+static void holdStartupLog()
+{
+    if (STARTUP_LOG_HOLD_MS == 0) {
+        return;
+    }
+
+    Serial.print("Holding startup log for ");
+    Serial.print(STARTUP_LOG_HOLD_MS / 1000.0f, 1);
+    Serial.println(" seconds before live output...");
+    Serial.println("Serial commands during live output: diag, pause, resume, start");
+    Serial.flush();
+    delay(STARTUP_LOG_HOLD_MS);
+}
+
+static void processSerialCommand(const char *command)
+{
+    if (strcmp(command, "diag") == 0) {
+        const bool wasPaused = liveStreamingPaused;
+        liveStreamingPaused = true;
+        runI2CDiagnostic();
+        liveStreamingPaused = wasPaused;
+        nextSampleUs = micros() + SAMPLE_INTERVAL_US;
+    } else if (strcmp(command, "pause") == 0) {
+        liveStreamingPaused = true;
+        Serial.println("Live output paused. Send 'resume' or 'start' to continue.");
+    } else if (strcmp(command, "resume") == 0 || strcmp(command, "start") == 0) {
+        liveStreamingPaused = false;
+        nextSampleUs = micros() + SAMPLE_INTERVAL_US;
+        Serial.println("Live output resumed.");
+        printLiveOutputHeader();
+    } else if (command[0] != '\0') {
+        Serial.print("Unknown command: ");
+        Serial.println(command);
+        Serial.println("Available commands: diag, pause, resume, start");
+    }
+}
+
+static void pollSerialCommands()
+{
+    while (Serial.available() > 0) {
+        const char c = static_cast<char>(Serial.read());
+
+        if (c == '\r' || c == '\n') {
+            serialCommand[serialCommandLength] = '\0';
+            processSerialCommand(serialCommand);
+            serialCommandLength = 0;
+            serialCommand[0] = '\0';
+            continue;
+        }
+
+        if (serialCommandLength < sizeof(serialCommand) - 1) {
+            serialCommand[serialCommandLength++] = c;
+        }
+    }
+}
+
+static void waitForStartCommand()
+{
+    if (!WAIT_FOR_START_COMMAND) {
+        return;
+    }
+
+    liveStreamingPaused = true;
+    Serial.println("Waiting for serial command 'start' before live output...");
+
+    while (liveStreamingPaused) {
+        pollSerialCommands();
+        delay(10);
+    }
 }
 
 /* ============== VALIDATION ============== */
@@ -386,6 +590,10 @@ void setup()
 
     printSettings();
 
+    if (RUN_I2C_DIAGNOSTIC) {
+        runI2CDiagnostic();
+    }
+
     for (uint8_t i = 0; i < NUM_SENSORS; ++i) {
         sensorOK[i] = false;
 
@@ -426,6 +634,9 @@ void setup()
         runStaticValidation();
     }
 
+    holdStartupLog();
+    waitForStartCommand();
+
     Serial.println("Starting live output...");
     printLiveOutputHeader();
 
@@ -434,6 +645,13 @@ void setup()
 
 void loop()
 {
+    pollSerialCommands();
+
+    if (liveStreamingPaused) {
+        delay(10);
+        return;
+    }
+
     const uint32_t nowUs = micros();
 
     if (static_cast<int32_t>(nowUs - nextSampleUs) < 0) {

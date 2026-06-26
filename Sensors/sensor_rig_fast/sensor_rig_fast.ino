@@ -20,8 +20,8 @@
 
 /* ================= SETTINGS ================= */
 
-const int NUM_SENS = 1;
-const int AD0_PINS[NUM_SENS] = {6};
+const int NUM_SENS = 5;
+const int AD0_PINS[NUM_SENS] = {2,3,4,5,6};
 
 const uint8_t MPU_ADDR = 0x68;
 

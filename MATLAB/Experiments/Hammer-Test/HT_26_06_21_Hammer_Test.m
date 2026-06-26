@@ -12,10 +12,10 @@ fsActual = 1000 / median(diff(T.t_arduino_ms));
 disp("Sampling ratio of the signal: " + num2str(fsActual))
 
 %% Run Hammer Test with hardcoded settings, 10 times.
-batch = RunHammerTestBatch(10);
+batch = RunHammerTestBatch(100);
 
 %Retrieve output folder name
-output_folder_name = batch.folderName;
+output_folder_name = batch.outputFolder;
 
 %% Retrieve data summary
 batch_summary = AnalyzeHammerTestBatchFFT(output_folder_name);
