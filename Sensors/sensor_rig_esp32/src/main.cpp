@@ -67,8 +67,17 @@ static constexpr uint8_t MPU_SAMPLE_RATE_DIVIDER = 3;
 // DLPF config 1 gives high bandwidth for vibration work while filtering noise.
 static constexpr uint8_t MPU_DLPF_CONFIG = 1;
 
-// +/-4 g => 8192 LSB/g.
-static constexpr int32_t ACCEL_SCALE_LSB_PER_G = 8192;
+// MPU6050 acceleration range options:
+//   +/-2 g  -> ACCEL_CONFIG 0x00, 16384 LSB/g
+//   +/-4 g  -> ACCEL_CONFIG 0x08,  8192 LSB/g
+//   +/-8 g  -> ACCEL_CONFIG 0x10,  4096 LSB/g
+//   +/-16 g -> ACCEL_CONFIG 0x18,  2048 LSB/g
+//
+// The hammer-test setup clipped at +/-4 g with a heavy hand hammer, so the
+// default is +/-8 g for more headroom.
+static constexpr uint8_t ACCEL_FULL_SCALE_G = 8;
+static constexpr uint8_t MPU_ACCEL_CONFIG = 0x10;
+static constexpr int32_t ACCEL_SCALE_LSB_PER_G = 4096;
 
 /* ============== MPU6050 REGISTERS ============== */
 
@@ -95,6 +104,8 @@ static bool liveStreamingPaused = false;
 
 static char serialCommand[32] = {0};
 static uint8_t serialCommandLength = 0;
+
+static void runStaticValidation();
 
 /* ============== LOW-LEVEL HELPERS ============== */
 
@@ -219,8 +230,7 @@ static bool initializeMPU(uint8_t id)
     ok = ok && writeByte(REG_CONFIG, MPU_DLPF_CONFIG);
     ok = ok && writeByte(REG_SMPLRT_DIV, MPU_SAMPLE_RATE_DIVIDER);
 
-    // ACCEL_CONFIG bits [4:3] = 01 => +/-4 g.
-    ok = ok && writeByte(REG_ACCEL_CONFIG, 0x08);
+    ok = ok && writeByte(REG_ACCEL_CONFIG, MPU_ACCEL_CONFIG);
 
     uint8_t whoAmI = 0;
     ok = ok && readByte(REG_WHO_AM_I, whoAmI);
@@ -311,6 +321,14 @@ static void printSettings()
     Serial.println(I2C_SCL_PIN);
     Serial.print("I2C clock [Hz]: ");
     Serial.println(I2C_CLOCK_HZ);
+    Serial.print("Accelerometer range [g]: +/-");
+    Serial.println(ACCEL_FULL_SCALE_G);
+    Serial.print("Acceleration scale [LSB/g]: ");
+    Serial.println(ACCEL_SCALE_LSB_PER_G);
+    Serial.print("MPU DLPF config: ");
+    Serial.println(MPU_DLPF_CONFIG);
+    Serial.print("MPU sample-rate divider: ");
+    Serial.println(MPU_SAMPLE_RATE_DIVIDER);
     Serial.print("AD0 pins: ");
 
     for (uint8_t i = 0; i < NUM_SENSORS; ++i) {
@@ -418,7 +436,7 @@ static void holdStartupLog()
     Serial.print("Holding startup log for ");
     Serial.print(STARTUP_LOG_HOLD_MS / 1000.0f, 1);
     Serial.println(" seconds before live output...");
-    Serial.println("Serial commands during live output: diag, pause, resume, start");
+    Serial.println("Serial commands during live output: diag, validate, pause, resume, start");
     Serial.flush();
     delay(STARTUP_LOG_HOLD_MS);
 }
@@ -429,6 +447,12 @@ static void processSerialCommand(const char *command)
         const bool wasPaused = liveStreamingPaused;
         liveStreamingPaused = true;
         runI2CDiagnostic();
+        liveStreamingPaused = wasPaused;
+        nextSampleUs = micros() + SAMPLE_INTERVAL_US;
+    } else if (strcmp(command, "validate") == 0) {
+        const bool wasPaused = liveStreamingPaused;
+        liveStreamingPaused = true;
+        runStaticValidation();
         liveStreamingPaused = wasPaused;
         nextSampleUs = micros() + SAMPLE_INTERVAL_US;
     } else if (strcmp(command, "pause") == 0) {
@@ -442,7 +466,7 @@ static void processSerialCommand(const char *command)
     } else if (command[0] != '\0') {
         Serial.print("Unknown command: ");
         Serial.println(command);
-        Serial.println("Available commands: diag, pause, resume, start");
+        Serial.println("Available commands: diag, validate, pause, resume, start");
     }
 }
 

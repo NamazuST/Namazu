@@ -27,6 +27,8 @@ addParameter(parser, "SampleRate", 500, @(x) isnumeric(x) && isscalar(x) && x > 
 addParameter(parser, "DurationSeconds", 15, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "Direction", "y", @(x) ischar(x) || isstring(x));
 addParameter(parser, "UseCorrectedData", false, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, "CorrectionMeans", [], @(x) isempty(x) || isnumeric(x) || istable(x));
+addParameter(parser, "AccelerometerRangeG", 8, @(x) isnumeric(x) && isscalar(x) && x > 0);
 
 addParameter(parser, "OutputRoot", pwd, @(x) ischar(x) || isstring(x));
 addParameter(parser, "FolderName", "", @(x) ischar(x) || isstring(x));
@@ -41,6 +43,7 @@ addParameter(parser, "PromptBeforeEachRun", true, @(x) islogical(x) || isnumeric
 addParameter(parser, "CountdownSeconds", 0, @(x) isnumeric(x) && isscalar(x) && x >= 0);
 addParameter(parser, "MakeLivePlot", false, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "PlotWindowSeconds", 10, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "PlotUpdateRateHz", 30, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "Verbose", true, @(x) islogical(x) || isnumeric(x));
 
 parse(parser, varargin{:});
@@ -54,6 +57,8 @@ sampleRate = parser.Results.SampleRate;
 durationSeconds = parser.Results.DurationSeconds;
 direction = lower(strtrim(string(parser.Results.Direction)));
 useCorrectedData = logical(parser.Results.UseCorrectedData);
+correctionMeansInput = parser.Results.CorrectionMeans;
+accelerometerRangeG = parser.Results.AccelerometerRangeG;
 
 outputRoot = string(parser.Results.OutputRoot);
 folderName = string(parser.Results.FolderName);
@@ -67,6 +72,7 @@ promptBeforeEachRun = logical(parser.Results.PromptBeforeEachRun);
 countdownSeconds = parser.Results.CountdownSeconds;
 makeLivePlot = logical(parser.Results.MakeLivePlot);
 plotWindowSeconds = parser.Results.PlotWindowSeconds;
+plotUpdateRateHz = parser.Results.PlotUpdateRateHz;
 verbose = logical(parser.Results.Verbose);
 
 [quantityIndex, quantityLabel] = parseQuantityOfInterest(direction);
@@ -142,6 +148,17 @@ end
 
 flush(s);
 
+if ~isempty(correctionMeansInput)
+    validationMeans = normalizeCorrectionMeans(correctionMeansInput, NumSens);
+
+    if verbose
+        fprintf("Using externally supplied correction means for hammer-test runs.\n");
+    end
+elseif any(isnan(validationMeans(:, 1:3)), "all") && verbose
+    warning("RunHammerTestBatch:MissingValidationMeans", ...
+        "Some correction means are missing. Corrected channels may contain NaN.");
+end
+
 validationMeanTable = createValidationMeanTable(validationMeans, NumSens);
 
 %% -------------------- BATCH LOOP --------------------
@@ -155,6 +172,8 @@ batch.numSensors = NumSens;
 batch.sampleRate = sampleRate;
 batch.durationSeconds = durationSeconds;
 batch.direction = direction;
+batch.accelerometerRangeG = accelerometerRangeG;
+batch.correctionMeans = validationMeanTable;
 batch.files = strings(N, 1);
 batch.run = repmat(createEmptyRunSummary(), N, 1);
 
@@ -186,12 +205,14 @@ for iRun = 1:N
         sampleRate, ...
         durationSeconds, ...
         validationMeans, ...
+        accelerometerRangeG, ...
         quantityIndex, ...
         quantityLabel, ...
         direction, ...
         useCorrectedData, ...
         makeLivePlot, ...
-        plotWindowSeconds);
+        plotWindowSeconds, ...
+        plotUpdateRateHz);
 
     runMeta.runIndex = iRun;
     runMeta.runStartedAt = runStartedAt;
@@ -214,6 +235,16 @@ for iRun = 1:N
 
     runMeta.analysisError = analysisError;
 
+    if runMeta.clipping.hasClipping
+        warning("RunHammerTestBatch:ClippingDetected", ...
+            "Hammer test %d reached the +/-%.1f g accelerometer range in %d axis samples.", ...
+            iRun, accelerometerRangeG, runMeta.clipping.atLimitSampleCount);
+    elseif runMeta.clipping.nearLimit
+        warning("RunHammerTestBatch:NearClipping", ...
+            "Hammer test %d came within 95%% of the +/-%.1f g accelerometer range.", ...
+            iRun, accelerometerRangeG);
+    end
+
     fileName = sprintf("%s_%03d.mat", filePrefix, iRun);
     filePath = fullfile(outputFolder, fileName);
 
@@ -228,6 +259,10 @@ for iRun = 1:N
     batch.run(iRun).actualSampleRateArduinoHz = runMeta.actualSampleRateArduinoHz;
     batch.run(iRun).actualSampleRateMatlabHz = runMeta.actualSampleRateMatlabHz;
     batch.run(iRun).analysisError = analysisError;
+    batch.run(iRun).hasClipping = runMeta.clipping.hasClipping;
+    batch.run(iRun).nearClipping = runMeta.clipping.nearLimit;
+    batch.run(iRun).maxAbsAccelerationG = runMeta.clipping.maxAbsG;
+    batch.run(iRun).atLimitSampleCount = runMeta.clipping.atLimitSampleCount;
 
     if ~isempty(fftResults)
         batch.run(iRun).freqHz = fftResults.freqHz;
@@ -259,8 +294,8 @@ end
 % ========================================================================
 
 function [T, meta] = acquireOneHammerRun(s, NumSens, NumValsTotal, sampleRate, ...
-    durationSeconds, validationMeans, quantityIndex, quantityLabel, direction, ...
-    useCorrectedData, makeLivePlot, plotWindowSeconds)
+    durationSeconds, validationMeans, accelerometerRangeG, quantityIndex, quantityLabel, direction, ...
+    useCorrectedData, makeLivePlot, plotWindowSeconds, plotUpdateRateHz)
 
 estimatedRows = ceil(durationSeconds * sampleRate * 1.5) + 200;
 data = nan(estimatedRows, NumValsTotal);
@@ -272,6 +307,11 @@ k = 0;
 t0_arduino_ms = NaN;
 currentValidationSensor = NaN;
 timerObj = tic;
+plotEverySamples = max(1, round(sampleRate / plotUpdateRateHz));
+
+if makeLivePlot && isvalid(plotState.figure)
+    plotState.axes.XLim = [0, max(durationSeconds, plotWindowSeconds)];
+end
 
 while toc(timerObj) <= durationSeconds
     line = readline(s);
@@ -298,7 +338,7 @@ while toc(timerObj) <= durationSeconds
         t0_arduino_ms = vals(1);
     end
 
-    if makeLivePlot && isvalid(plotState.figure)
+    if makeLivePlot && isvalid(plotState.figure) && mod(k - 1, plotEverySamples) == 0
         tPlot = (vals(1) - t0_arduino_ms) / 1000;
 
         for iSens = 1:NumSens
@@ -306,7 +346,6 @@ while toc(timerObj) <= durationSeconds
             addpoints(plotState.lines(iSens), tPlot, yPlot);
         end
 
-        plotState.axes.XLim = [max(0, tPlot - plotWindowSeconds), max(plotWindowSeconds, tPlot)];
         drawnow limitrate
     end
 end
@@ -345,9 +384,12 @@ meta.durationSecondsRequested = durationSeconds;
 meta.durationSecondsMeasured = elapsedSeconds;
 meta.quantityOfInterest = direction;
 meta.useCorrectedDataForPlot = useCorrectedData;
+meta.plotUpdateRateHz = plotUpdateRateHz;
 meta.validationMeans = createValidationMeanTable(validationMeans, NumSens);
+meta.accelerometerRangeG = accelerometerRangeG;
 meta.actualSampleRateArduinoHz = estimateSampleRate(T.t_arduino_elapsed_s);
 meta.actualSampleRateMatlabHz = estimateSampleRate(T.t_matlab_elapsed_s);
+meta.clipping = detectAccelerationClipping(T, NumSens, accelerometerRangeG);
 
 end
 
@@ -395,6 +437,10 @@ runSummary.actualSampleRateMatlabHz = NaN;
 runSummary.analysisError = "";
 runSummary.freqHz = [];
 runSummary.zeta = [];
+runSummary.hasClipping = false;
+runSummary.nearClipping = false;
+runSummary.maxAbsAccelerationG = NaN;
+runSummary.atLimitSampleCount = NaN;
 
 end
 
@@ -405,6 +451,107 @@ validationMeanTable = array2table(validationMeans, ...
 
 validationMeanTable.Sensor = (1:NumSens).';
 validationMeanTable = movevars(validationMeanTable, "Sensor", "Before", 1);
+
+end
+
+function clipping = detectAccelerationClipping(T, NumSens, accelerometerRangeG)
+
+axisLabels = ["x", "y", "z"];
+nRows = NumSens * numel(axisLabels);
+Sensor = nan(nRows, 1);
+Axis = strings(nRows, 1);
+MinG = nan(nRows, 1);
+MaxG = nan(nRows, 1);
+MaxAbsG = nan(nRows, 1);
+NearLimitCount = zeros(nRows, 1);
+AtLimitCount = zeros(nRows, 1);
+
+nearLimitG = 0.95 * accelerometerRangeG;
+atLimitG = accelerometerRangeG - 5e-4;
+iRow = 0;
+
+for iSens = 1:NumSens
+    for iAxis = 1:numel(axisLabels)
+        iRow = iRow + 1;
+        Sensor(iRow) = iSens;
+        Axis(iRow) = axisLabels(iAxis);
+
+        varName = sprintf("S%d_a%s_g", iSens, axisLabels(iAxis));
+
+        if ~ismember(varName, T.Properties.VariableNames)
+            continue;
+        end
+
+        values = T.(varName);
+        MinG(iRow) = min(values, [], "omitnan");
+        MaxG(iRow) = max(values, [], "omitnan");
+        MaxAbsG(iRow) = max(abs(values), [], "omitnan");
+        NearLimitCount(iRow) = sum(abs(values) >= nearLimitG, "omitnan");
+        AtLimitCount(iRow) = sum(abs(values) >= atLimitG, "omitnan");
+    end
+end
+
+summary = table( ...
+    Sensor, ...
+    Axis, ...
+    MinG, ...
+    MaxG, ...
+    MaxAbsG, ...
+    NearLimitCount, ...
+    AtLimitCount);
+
+clipping = struct();
+clipping.accelerometerRangeG = accelerometerRangeG;
+clipping.nearLimitThresholdG = nearLimitG;
+clipping.atLimitThresholdG = atLimitG;
+clipping.summary = summary;
+clipping.maxAbsG = max(MaxAbsG, [], "omitnan");
+clipping.nearLimitSampleCount = sum(NearLimitCount);
+clipping.atLimitSampleCount = sum(AtLimitCount);
+clipping.nearLimit = clipping.nearLimitSampleCount > 0;
+clipping.hasClipping = clipping.atLimitSampleCount > 0;
+
+end
+
+function validationMeans = normalizeCorrectionMeans(correctionMeansInput, NumSens)
+
+if istable(correctionMeansInput)
+    T = correctionMeansInput;
+
+    if ismember("Sensor", string(T.Properties.VariableNames))
+        T = sortrows(T, "Sensor");
+    end
+
+    namesLower = lower(string(T.Properties.VariableNames));
+    desiredNames = ["mean_ax_g", "mean_ay_g", "mean_az_g", "mean_mag_g"];
+    validationMeans = nan(height(T), 4);
+
+    for iCol = 1:numel(desiredNames)
+        idx = find(namesLower == desiredNames(iCol), 1);
+
+        if ~isempty(idx)
+            validationMeans(:, iCol) = T{:, idx};
+        end
+    end
+else
+    validationMeans = double(correctionMeansInput);
+end
+
+if size(validationMeans, 1) < NumSens || size(validationMeans, 2) < 3
+    error("CorrectionMeans must contain at least %d rows and 3 columns.", NumSens);
+end
+
+validationMeans = validationMeans(1:NumSens, :);
+
+if size(validationMeans, 2) == 3
+    validationMeans(:, 4) = sqrt(sum(validationMeans(:, 1:3).^2, 2));
+elseif size(validationMeans, 2) > 4
+    validationMeans = validationMeans(:, 1:4);
+end
+
+if any(~isfinite(validationMeans(:, 1:3)), "all")
+    error("CorrectionMeans contains non-finite axis offsets.");
+end
 
 end
 
@@ -526,20 +673,18 @@ if quantityIndex <= 3
     if useCorrectedData
         offset = validationMeans(iSens, quantityIndex);
 
-        if isnan(offset)
-            y = NaN;
-        else
+        if isfinite(offset)
             y = y - offset;
         end
     end
 
 else
+    y = vals(baseIndex + 3);
+
     if useCorrectedData
         offsets = validationMeans(iSens, 1:3);
 
-        if any(isnan(offsets))
-            y = NaN;
-        else
+        if all(isfinite(offsets))
             corrected = [
                 vals(baseIndex) - offsets(1), ...
                 vals(baseIndex + 1) - offsets(2), ...
@@ -547,8 +692,6 @@ else
             ];
             y = sqrt(sum(corrected.^2));
         end
-    else
-        y = vals(baseIndex + 3);
     end
 end
 
@@ -656,7 +799,7 @@ for iSens = 1:NumSens
 
         offset = validationMeans(iSens, jAxis);
 
-        if ismember(rawName, T.Properties.VariableNames) && ~isnan(offset)
+        if ismember(rawName, T.Properties.VariableNames) && isfinite(offset)
             T.(corrName) = T.(rawName) - offset;
         else
             T.(corrName) = nan(height(T), 1);

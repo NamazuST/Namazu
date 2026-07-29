@@ -44,6 +44,7 @@ parser.FunctionName = mfilename;
 addParameter(parser, "Baud", 1000000, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "SampleRate", 250, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "PlotWindowSeconds", 10, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "PlotUpdateRateHz", 30, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "UseCorrectedData", false, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "SaveData", [], @(x) isempty(x) || islogical(x) || isnumeric(x));
 addParameter(parser, "OutputFolder", pwd, @(x) ischar(x) || isstring(x));
@@ -56,6 +57,7 @@ parse(parser, varargin{:});
 baud = parser.Results.Baud;
 sampleRate = parser.Results.SampleRate;
 plotWindowSeconds = parser.Results.PlotWindowSeconds;
+plotUpdateRateHz = parser.Results.PlotUpdateRateHz;
 useCorrectedData = logical(parser.Results.UseCorrectedData);
 
 if isempty(parser.Results.SaveData)
@@ -127,6 +129,7 @@ else
 end
 
 legend(plotAxes, "show", "Location", "best");
+plotAxes.XLim = [0, max(durationSeconds, plotWindowSeconds)];
 
 %% -------------------- WAIT FOR LIVE SENSOR STREAM --------------------
 if verbose
@@ -157,7 +160,7 @@ end
 
 requiredValidationColumns = 1:min(quantityIndex, 3);
 if useCorrectedData && any(isnan(validationMeans(:, requiredValidationColumns)), "all")
-    warning("Some validation means are missing. Corrected live values for those sensors will be NaN.");
+    warning("Some validation means are missing. Live plot falls back to raw values for those sensors.");
 end
 
 %% -------------------- ACQUIRE DATA --------------------
@@ -170,6 +173,7 @@ t0_arduino_ms = firstVals(1);
 pendingVals = firstVals;
 pendingMatlabTime = firstMatlabTime;
 acquisitionTimer = tic;
+plotEverySamples = max(1, round(sampleRate / plotUpdateRateHz));
 
 while toc(acquisitionTimer) <= durationSeconds && isvalid(plotFigure)
 
@@ -199,6 +203,10 @@ while toc(acquisitionTimer) <= durationSeconds && isvalid(plotFigure)
     data(k, :) = vals;
     t_matlab(k) = currentMatlabTime;
 
+    if mod(k - 1, plotEverySamples) ~= 0
+        continue;
+    end
+
     tPlot = (vals(1) - t0_arduino_ms) / 1000;
 
     for iSens = 1:NumSens
@@ -206,7 +214,6 @@ while toc(acquisitionTimer) <= durationSeconds && isvalid(plotFigure)
         addpoints(sensorLines(iSens), tPlot, yPlot);
     end
 
-    plotAxes.XLim = [max(0, tPlot - plotWindowSeconds), max(plotWindowSeconds, tPlot)];
     drawnow limitrate
 end
 
@@ -245,6 +252,7 @@ sensorRigData.Properties.UserData.sampleRate = sampleRate;
 sensorRigData.Properties.UserData.numberOfSensors = NumSens;
 sensorRigData.Properties.UserData.baud = baud;
 sensorRigData.Properties.UserData.port = port;
+sensorRigData.Properties.UserData.plotUpdateRateHz = plotUpdateRateHz;
 
 %% -------------------- METADATA AND OPTIONAL SAVE --------------------
 meta = struct();
@@ -252,6 +260,7 @@ meta.port = port;
 meta.baud = baud;
 meta.numSensors = NumSens;
 meta.sampleRate = sampleRate;
+meta.plotUpdateRateHz = plotUpdateRateHz;
 meta.durationSecondsRequested = durationSeconds;
 meta.durationSecondsMeasured = elapsedSeconds;
 meta.quantityOfInterest = string(quantityOfInterest);
@@ -352,20 +361,18 @@ if quantityIndex <= 3
     if useCorrectedData
         offset = validationMeans(iSens, quantityIndex);
 
-        if isnan(offset)
-            y = NaN;
-        else
+        if ~isnan(offset)
             y = y - offset;
         end
     end
 
 else
+    y = vals(baseIndex + 3);
+
     if useCorrectedData
         offsets = validationMeans(iSens, 1:3);
 
-        if any(isnan(offsets))
-            y = NaN;
-        else
+        if ~any(isnan(offsets))
             corrected = [
                 vals(baseIndex) - offsets(1), ...
                 vals(baseIndex + 1) - offsets(2), ...
@@ -373,8 +380,6 @@ else
             ];
             y = sqrt(sum(corrected.^2));
         end
-    else
-        y = vals(baseIndex + 3);
     end
 end
 
@@ -448,7 +453,12 @@ if numel(valsTemp) == NumValsTotal && ~isnan(valsTemp(1))
     vals = valsTemp;
     isData = true;
 elseif verbose
-    disp("Skipping non-data line: " + line);
+    if all(~isnan(valsTemp)) && numel(valsTemp) ~= NumValsTotal
+        fprintf("Skipping numeric line with %d values; expected %d values for %d sensors: %s\n", ...
+            numel(valsTemp), NumValsTotal, NumSens, line);
+    else
+        disp("Skipping non-data line: " + line);
+    end
 end
 
 end

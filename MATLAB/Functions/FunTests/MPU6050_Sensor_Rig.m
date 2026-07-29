@@ -1,6 +1,6 @@
 %% -------------------- SETTINGS --------------------
-port = "COM9";          % <- change this to your Arduino port
-baud = 115200;
+port = "COM8";          % <- change this to your Arduino port
+baud = 1000000;
 N = 1000;               % number of valid samples to acquire
 NumSens = 5;            % number of sensors
 
