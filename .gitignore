@@ -5,6 +5,7 @@
 MATLAB/MarvCode/
 MATLAB/Experiments/Hammer-Test/
 Sensors/sensor_rig_esp32/.vscode/
+misc/
 
 # We do not want to store any .mat file
 *.mat

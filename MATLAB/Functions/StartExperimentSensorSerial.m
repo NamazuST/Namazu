@@ -1,4 +1,4 @@
-function [currentSimulationData] = StartExperimentSensorSerial(currentSimulationData,dev)
+function [currentSimulationData] = StartExperimentSensorSerial(currentSimulationData, dev, varargin)
 
 % StartExperiment
 % Sensor-active branch uses a serial CSV stream from the MPU6050 sensor rig.
@@ -14,6 +14,28 @@ function [currentSimulationData] = StartExperimentSensorSerial(currentSimulation
 % Full multi-sensor data are stored in:
 %   currentSimulationData.sensorRigData
 %   currentSimulationData.sensorRigValidationMeans
+
+parser = inputParser;
+parser.FunctionName = mfilename;
+addParameter(parser, "Direction", "y", @(x) ischar(x) || isstring(x));
+addParameter(parser, "PromptBeforeMotion", true, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, "MakeLivePlot", true, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, "ClosePlotAfterRun", false, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, "ExtraAcquisitionSeconds", 5, ...
+    @(x) isnumeric(x) && isscalar(x) && x >= 0);
+parse(parser, varargin{:});
+
+direction = lower(strtrim(string(parser.Results.Direction)));
+promptBeforeMotion = logical(parser.Results.PromptBeforeMotion);
+makeLivePlot = logical(parser.Results.MakeLivePlot);
+closePlotAfterRun = logical(parser.Results.ClosePlotAfterRun);
+extraAcquisitionSeconds = parser.Results.ExtraAcquisitionSeconds;
+
+if ~ismember(direction, ["x", "y", "z"])
+    error('Direction must be "x", "y", or "z".');
+end
+
+directionIndex = find(direction == ["x", "y", "z"], 1);
 
 % Are sensors connected or not?
 if currentSimulationData.accelerationSensorsActive == true
@@ -49,34 +71,39 @@ if currentSimulationData.accelerationSensorsActive == true
     pause(2);
 
     %% -------------------- PLOT SETUP --------------------
-    figure;
+    plotFigure = gobjects(0);
 
-    p1 = subplot(2,1,1);
-    xlabel('t [s]');
-    ylabel('Acceleration [g]');
-    title('Acceleration values from MPU6050 sensor 1');
-    x1_val = animatedline('Color',[0 0.4470 0.7410]);
-    y1_val = animatedline('Color',[0.8500 0.3250 0.0980]);
-    z1_val = animatedline('Color',[0.9290 0.6940 0.1250]);
-    axis tight;
-    legend('X','Y','Z');
+    if makeLivePlot
+        plotFigure = figure("Name", sprintf( ...
+            "NAMAZU sensor rig - %s-axis shaking-table test", direction));
 
-    p2 = subplot(2,1,2);
-    xlabel('t [s]');
-    ylabel('Acceleration x [g]');
-    title('X-axis acceleration of all MPU6050 sensors');
-    hold on;
-    colors = lines(NumSens);
-    xSensorLines = gobjects(NumSens,1);
+        p1 = subplot(2,1,1);
+        xlabel('t [s]');
+        ylabel('Acceleration [g]');
+        title('Acceleration values from MPU6050 sensor 1');
+        x1_val = animatedline('Color',[0 0.4470 0.7410]);
+        y1_val = animatedline('Color',[0.8500 0.3250 0.0980]);
+        z1_val = animatedline('Color',[0.9290 0.6940 0.1250]);
+        axis tight;
+        legend('X','Y','Z');
 
-    for iSens = 1:NumSens
-        xSensorLines(iSens) = animatedline( ...
-            'Color', colors(iSens,:), ...
-            'DisplayName', sprintf('Sensor %d', iSens));
+        p2 = subplot(2,1,2);
+        xlabel('t [s]');
+        ylabel(sprintf('Acceleration %s [g]', direction));
+        title(sprintf('%s-axis acceleration of all MPU6050 sensors', upper(direction)));
+        hold on;
+        colors = lines(NumSens);
+        directionSensorLines = gobjects(NumSens,1);
+
+        for iSens = 1:NumSens
+            directionSensorLines(iSens) = animatedline( ...
+                'Color', colors(iSens,:), ...
+                'DisplayName', sprintf('Sensor %d', iSens));
+        end
+
+        axis tight;
+        legend('show','Location','best');
     end
-
-    axis tight;
-    legend('show','Location','best');
 
     %% -------------------- WAIT FOR LIVE SENSOR STREAM --------------------
     fprintf('Waiting for sensor rig stream...\n');
@@ -107,8 +134,10 @@ if currentSimulationData.accelerationSensorsActive == true
     % Acc sensor delay
     currentSimulationData.motorStartupDelay = 0;
 
-    if ~strcmp(input("Start the motion? y/n\n",'s'),'y')
-        error("Aborted");
+    if promptBeforeMotion
+        if ~strcmpi(strtrim(input('Start the motion? y/n [n]\n', 's')), 'y')
+            error("StartExperimentSensorSerial:Aborted", "Aborted");
+        end
     end
 
     % Remove idle samples acquired while the user was answering.
@@ -118,8 +147,9 @@ if currentSimulationData.accelerationSensorsActive == true
     %% -------------------- ACQUIRE DATA --------------------
     experimentTimer = tic;
 
-    % Sensors acquire 5 s longer signal, same as original function.
-    acquisitionDuration = currentSimulationData.inputSignal(end,1) + 5;
+    % Sensors acquire a configurable tail after the motion has finished.
+    acquisitionDuration = currentSimulationData.inputSignal(end,1) + ...
+        extraAcquisitionSeconds;
 
     % Preallocate with safety margin.
     estimatedRows = ceil(acquisitionDuration * sampleRate * 1.3) + 100;
@@ -171,25 +201,26 @@ if currentSimulationData.accelerationSensorsActive == true
             started = 1;
         end
 
-        % Plot sensor 1 XYZ.
-        if NumSens >= 1
-            s1Offset = 2; % vals: [t_ms, S1_ax, S1_ay, S1_az, S1_mag, S2_...]
+        if makeLivePlot && isgraphics(plotFigure)
+            % Plot sensor 1 XYZ.
+            if NumSens >= 1
+                s1Offset = 2; % [t_ms, S1_ax, S1_ay, S1_az, S1_mag, ...]
+                addpoints(x1_val, tPlot, vals(s1Offset));
+                addpoints(y1_val, tPlot, vals(s1Offset+1));
+                addpoints(z1_val, tPlot, vals(s1Offset+2));
+            end
 
-            addpoints(x1_val, tPlot, vals(s1Offset));
-            addpoints(y1_val, tPlot, vals(s1Offset+1));
-            addpoints(z1_val, tPlot, vals(s1Offset+2));
+            % Plot the selected analysis direction for all sensors.
+            for iSens = 1:NumSens
+                directionValueIndex = 2 + (iSens-1)*4 + directionIndex - 1;
+                addpoints(directionSensorLines(iSens), tPlot, ...
+                    vals(directionValueIndex));
+            end
+
+            p1.XLim = [max(0,tPlot-10), max(10,tPlot)];
+            p2.XLim = [max(0,tPlot-10), max(10,tPlot)];
+            drawnow limitrate
         end
-
-        % Plot x-axis acceleration of all sensors.
-        for iSens = 1:NumSens
-            axIndex = 2 + (iSens-1)*4;
-            addpoints(xSensorLines(iSens), tPlot, vals(axIndex));
-        end
-
-        p1.XLim = [max(0,tPlot-10), max(10,tPlot)];
-        p2.XLim = [max(0,tPlot-10), max(10,tPlot)];
-
-        drawnow limitrate
     end
 
     toc(experimentTimer)
@@ -244,6 +275,18 @@ if currentSimulationData.accelerationSensorsActive == true
     currentSimulationData.sensorRigData = sensorRigData;
     currentSimulationData.sensorRigValidationMeans = validationMeanTable;
     currentSimulationData.sampleRate = sampleRate;
+
+    currentSimulationData.sensorRigData.Properties.UserData = struct( ...
+        "sampleRate", sampleRate, ...
+        "numberOfSensors", NumSens, ...
+        "port", string(port), ...
+        "baud", baud, ...
+        "direction", direction, ...
+        "acquisitionDurationSeconds", acquisitionDuration);
+
+    if closePlotAfterRun && isgraphics(plotFigure)
+        close(plotFigure);
+    end
 
 else
 

@@ -5,7 +5,7 @@
 sampleRateHz = 250;
 numSensors = 5;
 direction = "y";
-fMaxHz = 100;
+fMaxHz = 90;
 fftSignalMode = "raw"; % "raw" or "corrected"
 plotUpdateRateHz = 30; % Display only; data are still acquired at sampleRateHz.
 
@@ -55,7 +55,7 @@ fftResults = EstimateEigenfrequencyFFT(T, ...
     "Sensors", validSensors, ...
     "FMax", fMaxHz, ...
     "FrequencyResolutionHz", 0.1, ...
-    "MinPeakDistanceHz", 15);
+    "MinPeakDistanceHz", 10);
 
 function n = countFiniteSamples(T, varName)
 

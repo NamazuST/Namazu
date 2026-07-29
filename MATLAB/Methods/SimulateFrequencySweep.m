@@ -1,42 +1,62 @@
-function [pos,t,name] = SimulateFrequencySweep(maxF,maxA,maxT,varargin)
-    %SIMULATEFREQUENCYSWEEP Simulate a sweep from 0 Hz to a defined maximum
-    %frequency
-%   Generates oscillatory signals of 1-N frequencies with different
-%   amplitude values for a specific time duration.
-%INPUT:
-%   omega:  scalar value of a frequency or an array of several overlapping
-%   frequencies in HZ
-%   amp:    Amplitude factor in mm for the respective frequency, scalar or array
-%   maxT:   scalar value of the maximum simulation time in seconds
-%   varargin: can contain a manually chosen 'nStepsPerSecond' 
-%   number of timeStepsPerSecond
-%   the default value is 100.
+function [pos, t, name] = SimulateFrequencySweep(maxF, maxA, maxT, varargin)
+% SimulateFrequencySweep
 %
-% OUTPUT:
-%   pos: signal position in mm
-%   t: Specific time discretisation suited to the signal
-%   name: File name
+% Generates a displacement-controlled frequency sweep.
+%
+% Inputs:
+%   maxF  maximum angular frequency [rad/s]
+%   maxA  displacement amplitude [mm]
+%   maxT  duration [s]
+%
+% Name-value options:
+%   "nStepsPerSecond"   command rate [Hz], default 100
+%   "frequencyFunction" function handle omega(t) [rad/s]. The default is
+%                       a linear sweep from 0 to maxF.
+%
+% Outputs are row vectors for compatibility with the existing NAMAZU
+% signal-generator functions.
+%
+% The phase is the time integral of angular frequency. The previous
+% implementation used sin(omega(t)*t), which made a nominal linear sweep
+% finish at twice the requested instantaneous frequency.
 
-    if mod(length(varargin),2) ~= 0
-        error("check variable input arguments for SimulateRandomHarmonic");
+parser = inputParser;
+parser.FunctionName = mfilename;
+addParameter(parser, "nStepsPerSecond", 100, ...
+    @(x) isnumeric(x) && isscalar(x) && isfinite(x) && x > 0);
+addParameter(parser, "frequencyFunction", [], ...
+    @(x) isempty(x) || isa(x, "function_handle"));
+parse(parser, varargin{:});
+
+validateattributes(maxF, {'numeric'}, ...
+    {'scalar', 'real', 'finite', 'nonnegative'}, mfilename, 'maxF');
+validateattributes(maxA, {'numeric'}, ...
+    {'scalar', 'real', 'finite', 'nonnegative'}, mfilename, 'maxA');
+validateattributes(maxT, {'numeric'}, ...
+    {'scalar', 'real', 'finite', 'positive'}, mfilename, 'maxT');
+
+timeStepsPerSecond = parser.Results.nStepsPerSecond;
+nIntervals = max(1, round(maxT * timeStepsPerSecond));
+t = linspace(0, maxT, nIntervals + 1);
+
+if isempty(parser.Results.frequencyFunction)
+    omega = maxF * t / maxT;
+else
+    omega = parser.Results.frequencyFunction(t);
+
+    if isscalar(omega)
+        omega = repmat(omega, size(t));
     end
-    
-    timeStepsPerSecond = 100; % time discretisation
-    freqFunc = @(t) t/maxT * maxF;
-    for i=1:2:length(varargin)
-        if strcmp(varargin{i},'nStepsPerSecond')
-            timeStepsPerSecond = varargin{i+1};
-        end
-        if strcmp(varargin{i},'frequencyFunction')
-            freqFunc = varargin{i+1};
-        end
+
+    if ~isnumeric(omega) || ~isequal(size(omega), size(t)) || ...
+            any(~isfinite(omega), "all") || any(omega < 0, "all")
+        error("frequencyFunction must return one finite, nonnegative angular frequency per time sample.");
     end
-
-    t = linspace(0,maxT,maxT*timeStepsPerSecond);
-    posFunc = @(t) maxA.*sin(freqFunc(t).*t);
-
-    pos = posFunc(t);
-
-    name = [num2str(maxF) 'Hz_' num2str(maxT) 's'];
 end
 
+phase = cumtrapz(t, omega);
+pos = maxA .* sin(phase);
+
+name = sprintf("%.6gHz_%.6gs", maxF/(2*pi), maxT);
+
+end

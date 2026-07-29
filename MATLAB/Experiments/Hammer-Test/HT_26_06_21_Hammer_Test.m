@@ -1,21 +1,15 @@
-%% Collect one sample with animation
-[T, validationMeanTable, meta] = TestSensorRigAnimation("y", "COM9", 1, 30, ...
-    "SampleRate", 500, ...
-    "Baud", 1000000, ...
-    "AnalysisOptions", {"FMax", 100, ...
-                        "FrequencyResolutionHz", 0.1, ...
-                        "WindowDurationSeconds", 20, ...
-                        "MinPeakDistanceHz", 15});
+%% Compatibility entry point for the current hammer-test campaign
+%
+% The former contents used the obsolete one-sensor, 500 Hz defaults. Keep
+% this familiar filename as a safe redirect to the single source of campaign
+% settings used by the five-sensor, 250 Hz ESP32 rig.
 
-%Check for sampling ratio
-fsActual = 1000 / median(diff(T.t_arduino_ms));
-disp("Sampling ratio of the signal: " + num2str(fsActual))
+hammerTestFolder = fileparts(mfilename("fullpath"));
+matlabRoot = fileparts(fileparts(hammerTestFolder));
+campaignScript = fullfile( ...
+    matlabRoot, ...
+    "Functions", ...
+    "FunTests", ...
+    "Script_Prepare_HT_26_06_21_Hammer_Test.m");
 
-%% Run Hammer Test with hardcoded settings, 10 times.
-batch = RunHammerTestBatch(100);
-
-%Retrieve output folder name
-output_folder_name = batch.outputFolder;
-
-%% Retrieve data summary
-batch_summary = AnalyzeHammerTestBatchFFT(output_folder_name);
+run(campaignScript);

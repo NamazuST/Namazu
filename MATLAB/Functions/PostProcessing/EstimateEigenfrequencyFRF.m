@@ -28,6 +28,10 @@ function results = EstimateEigenfrequencyFRF(dataSource, varargin)
 %   results.H            FRFs, one column per output channel
 %   results.coherence    input-output coherence
 %   results.envFRF       FRF envelope over output channels
+%   results.modeShapeComplexRatio
+%                       complex response ratios [input; outputs] at peaks
+%   results.modeShapeNormalizedComplex
+%                       phase-aligned, maximum-normalized response shapes
 %   results.inputSignal  uniformly sampled input acceleration [m/s^2]
 %   results.outputAcc    uniformly sampled output accelerations [m/s^2]
 %   results.time         uniform time vector [s]
@@ -44,7 +48,7 @@ function results = EstimateEigenfrequencyFRF(dataSource, varargin)
 %   results = EstimateEigenfrequencyFRF(currentSimulationData);
 %   results = EstimateEigenfrequencyFRF(T);
 %   results = EstimateEigenfrequencyFRF(T, "Direction", "z", ...
-%       "SampleRate", 250, "FMax", 100, "FrequencyResolutionHz", 0.25);
+%       "SampleRate", 250, "FMax", 90, "FrequencyResolutionHz", 0.25);
 %   results = EstimateEigenfrequencyFRF(T, "Meta", meta);
 
 %% -------------------- USER-ADJUSTABLE DEFAULTS --------------------
@@ -56,10 +60,10 @@ addParameter(parser, "InputSensor", 1, @(x) isnumeric(x) && isscalar(x) && x > 0
 addParameter(parser, "OutputSensors", [], @(x) isempty(x) || (isnumeric(x) && isvector(x) && all(x > 0)));
 addParameter(parser, "UseCorrectedSignals", true, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "RelativePeakLevel", 0.03, @(x) isnumeric(x) && isscalar(x) && x >= 0);
-addParameter(parser, "MinPeakDistanceHz", 15, @(x) isnumeric(x) && isscalar(x) && x >= 0);
+addParameter(parser, "MinPeakDistanceHz", 10, @(x) isnumeric(x) && isscalar(x) && x >= 0);
 addParameter(parser, "DeltaFInterp", 5, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "FMin", 0.5, @(x) isnumeric(x) && isscalar(x) && x >= 0);
-addParameter(parser, "FMax", 100, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "FMax", 90, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "MakePlots", true, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "SampleRate", [], @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x > 0));
 addParameter(parser, "NumberOfSensors", [], @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x > 0));
@@ -67,6 +71,8 @@ addParameter(parser, "Gravity", 9.81, @(x) isnumeric(x) && isscalar(x) && x > 0)
 addParameter(parser, "UseNominalSampleRate", false, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "FrequencyResolutionHz", 0.25, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "WindowDurationSeconds", 8, @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x > 0));
+addParameter(parser, "MinimumPeakCoherence", 0, ...
+    @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <= 1);
 addParameter(parser, "Meta", [], @(x) isempty(x) || isstruct(x));
 parse(parser, varargin{:});
 
@@ -93,12 +99,18 @@ minPeakDistanceHz = parser.Results.MinPeakDistanceHz;
 deltaFInterp = parser.Results.DeltaFInterp;
 fmin = parser.Results.FMin;
 fmax = parser.Results.FMax;
+
+if fmax <= fmin
+    error("FMax must be larger than FMin.");
+end
+
 makePlots = logical(parser.Results.MakePlots);
 sampleRateOverride = parser.Results.SampleRate;
 numberOfSensorsOverride = parser.Results.NumberOfSensors;
 useNominalSampleRate = logical(parser.Results.UseNominalSampleRate);
 frequencyResolutionHz = parser.Results.FrequencyResolutionHz;
 windowDurationSeconds = parser.Results.WindowDurationSeconds;
+minimumPeakCoherence = parser.Results.MinimumPeakCoherence;
 metaOverride = parser.Results.Meta;
 
 %% -------------------- CHECK INPUT DATA --------------------
@@ -171,7 +183,7 @@ t = double(t(:));
 %% -------------------- SELECT INPUT AND OUTPUT CHANNELS --------------------
 axisLetter = char(direction);
 
-inputVar = selectAccelerationVariable(varNames, inputSensor, axisLetter, useCorrectedSignals);
+inputVar = selectAccelerationVariable(T, varNames, inputSensor, axisLetter, useCorrectedSignals);
 input_g = T.(char(inputVar));
 
 outputVars = strings(1, numel(outputSensors));
@@ -179,7 +191,7 @@ output_g = nan(height(T), numel(outputSensors));
 
 for k = 1:numel(outputSensors)
     sID = outputSensors(k);
-    outputVars(k) = selectAccelerationVariable(varNames, sID, axisLetter, useCorrectedSignals);
+    outputVars(k) = selectAccelerationVariable(T, varNames, sID, axisLetter, useCorrectedSignals);
     output_g(:,k) = T.(char(outputVars(k)));
 end
 
@@ -313,29 +325,42 @@ end
     "MinPeakDistance", max(1, round(minPeakDistanceHz / dfFRF)));
 
 locs = idxSearch(locsLocal);
+
+if ~isempty(locs) && minimumPeakCoherence > 0
+    peakCoherenceCandidate = max(coh(locs, :), [], 2, "omitnan");
+    keepPeak = peakCoherenceCandidate >= minimumPeakCoherence;
+    locs = locs(keepPeak);
+    pks = pks(keepPeak);
+end
+
 nPeaks = numel(pks);
 
 %% -------------------- LOCAL SPLINE REFINEMENT + HALF-POWER DAMPING --------------------
 freqv = nan(1,nPeaks);
 zeta = nan(1,nPeaks);
 
-npt = round(deltaFInterp / dfFRF);
+npt = max(1, round(deltaFInterp / dfFRF));
 
 for iPeak = 1:nPeaks
 
-    idxLeft  = max(locs(iPeak)-npt, 1);
-    idxRight = min(locs(iPeak)+npt, numel(freq));
+    idxLeft  = max(locs(iPeak)-npt, idxSearch(1));
+    idxRight = min(locs(iPeak)+npt, idxSearch(end));
+
+    if idxRight <= idxLeft
+        freqv(iPeak) = freq(locs(iPeak));
+        continue;
+    end
 
     intFreq = linspace(freq(idxLeft), freq(idxRight), 5000);
 
-    envInterp = spline( ...
+    envInterp = pchip( ...
         freq(idxLeft:idxRight), ...
         envFRF(idxLeft:idxRight), ...
         intFreq);
 
     [peakValueInterp, peakIdxInterp] = max(envInterp);
 
-    freqv(iPeak) = intFreq(peakIdxInterp);
+    freqv(iPeak) = min(max(intFreq(peakIdxInterp), fmin), fmax);
 
     % Half-power bandwidth damping estimate.
     % This is mainly valid for lightly damped, well-separated modes.
@@ -381,6 +406,32 @@ for iPeak = 1:nPeaks
 
     if ~isnan(fLeft) && ~isnan(fRight)
         zeta(iPeak) = (fRight - fLeft) / (2 * freqv(iPeak));
+    end
+end
+
+%% -------------------- RESPONSE SHAPES AT IDENTIFIED PEAKS --------------------
+% For base excitation these are complex transmissibility/response shapes,
+% not mass-normalized eigenvectors. Sensor 1 (or InputSensor) is the
+% reference channel with a raw response ratio of one.
+sensorOrder = [inputSensor, outputSensors];
+modeShapeComplexRatio = complex(nan(numel(sensorOrder), nPeaks));
+modeShapeNormalizedComplex = complex(nan(numel(sensorOrder), nPeaks));
+coherenceAtPeaks = nan(nOutputs, nPeaks);
+
+for iPeak = 1:nPeaks
+    hAtPeak = interp1(freq, H, freqv(iPeak), "linear");
+    coherenceAtPeaks(:, iPeak) = ...
+        interp1(freq, coh, freqv(iPeak), "linear").';
+
+    rawShape = [1; hAtPeak(:)];
+    modeShapeComplexRatio(:, iPeak) = rawShape;
+
+    [normalizationAmplitude, referenceIndex] = max(abs(rawShape));
+
+    if isfinite(normalizationAmplitude) && normalizationAmplitude > 0
+        phaseRotation = exp(-1i * angle(rawShape(referenceIndex)));
+        modeShapeNormalizedComplex(:, iPeak) = ...
+            rawShape * phaseRotation / normalizationAmplitude;
     end
 end
 
@@ -455,6 +506,24 @@ if makePlots
     xlabel("Frequency [Hz]", "Interpreter", "none");
     ylabel("Coherence", "Interpreter", "none");
     title("Input-output coherence", "Interpreter", "none");
+
+    if nPeaks > 0
+        figure;
+        tiledlayout("flow", "TileSpacing", "compact", "Padding", "compact");
+
+        for iPeak = 1:nPeaks
+            nexttile;
+            plot(sensorOrder, real(modeShapeNormalizedComplex(:, iPeak)), ...
+                "-o", "LineWidth", 1.2);
+            hold on;
+            yline(0, "Color", [0.4 0.4 0.4]);
+            grid on;
+            xticks(sensorOrder);
+            xlabel("Sensor");
+            ylabel("Normalized real response");
+            title(sprintf("Response shape at %.3f Hz", freqv(iPeak)));
+        end
+    end
 end
 
 %% -------------------- STORE RESULTS --------------------
@@ -476,6 +545,14 @@ results.freqAxis = freq;
 results.H = H;
 results.coherence = coh;
 results.envFRF = envFRF;
+results.modeShapeSensorOrder = sensorOrder;
+results.modeShapeComplexRatio = modeShapeComplexRatio;
+results.modeShapeNormalizedComplex = modeShapeNormalizedComplex;
+results.modeShapeAmplitude = abs(modeShapeNormalizedComplex);
+results.modeShapePhaseDeg = rad2deg(angle(modeShapeNormalizedComplex));
+results.coherenceAtPeaks = coherenceAtPeaks;
+results.peakCoherenceMaximum = max(coherenceAtPeaks, [], 1, "omitnan");
+results.peakCoherenceMinimum = min(coherenceAtPeaks, [], 1, "omitnan");
 
 results.time = tUniform;
 results.fs = fs;
@@ -501,6 +578,7 @@ results.settings.nfft = nfft;
 results.settings.windowLength = windowLength;
 results.settings.windowDurationSeconds = windowLength / fs;
 results.settings.overlapLength = noverlap;
+results.settings.minimumPeakCoherence = minimumPeakCoherence;
 
 end
 
@@ -619,14 +697,18 @@ NumSens = max(sensorIds);
 
 end
 
-function varName = selectAccelerationVariable(varNames, sensorIdx, axisLetter, useCorrectedSignals)
+function varName = selectAccelerationVariable(T, varNames, sensorIdx, axisLetter, useCorrectedSignals)
 
 if useCorrectedSignals
     correctedName = sprintf("S%d_a%s_g_corr", sensorIdx, axisLetter);
 
     if ismember(string(correctedName), varNames)
-        varName = string(correctedName);
-        return;
+        correctedValues = T.(correctedName);
+
+        if any(isfinite(correctedValues))
+            varName = string(correctedName);
+            return;
+        end
     end
 end
 

@@ -10,7 +10,7 @@ function batch = RunHammerTestBatch(N, varargin)
 %   batch = RunHammerTestBatch(20, "DurationSeconds", 12, "Direction", "y");
 %   batch = RunHammerTestBatch(10, ...
 %       "OutputRoot", "Measurements", ...
-%       "FFTOptions", {"FMax", 100, "FrequencyResolutionHz", 0.1});
+%       "FFTOptions", {"FMax", 90, "FrequencyResolutionHz", 0.1});
 
 %% -------------------- SETTINGS --------------------
 if nargin < 1 || isempty(N)
@@ -20,10 +20,11 @@ end
 parser = inputParser;
 parser.FunctionName = mfilename;
 
-addParameter(parser, "Port", "COM9", @(x) ischar(x) || isstring(x));
+addParameter(parser, "Port", "COM5", @(x) ischar(x) || isstring(x));
 addParameter(parser, "Baud", 1000000, @(x) isnumeric(x) && isscalar(x) && x > 0);
-addParameter(parser, "NumSensors", 1, @(x) isnumeric(x) && isscalar(x) && x > 0);
-addParameter(parser, "SampleRate", 500, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "NumSensors", 5, @(x) isnumeric(x) && isscalar(x) && ...
+    x > 0 && mod(x, 1) == 0);
+addParameter(parser, "SampleRate", 250, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "DurationSeconds", 15, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "Direction", "y", @(x) ischar(x) || isstring(x));
 addParameter(parser, "UseCorrectedData", false, @(x) islogical(x) || isnumeric(x));
@@ -36,14 +37,18 @@ addParameter(parser, "FilePrefix", "hammer_test", @(x) ischar(x) || isstring(x))
 addParameter(parser, "SaveSummary", true, @(x) islogical(x) || isnumeric(x));
 
 addParameter(parser, "RunFFTAnalysis", true, @(x) islogical(x) || isnumeric(x));
-addParameter(parser, "FFTOptions", {"FMax", 100, "FrequencyResolutionHz", 0.1, ...
-    "MinPeakDistanceHz", 15, "MakePlots", false}, @(x) iscell(x));
+addParameter(parser, "FFTOptions", {"FMax", 90, "FrequencyResolutionHz", 0.1, ...
+    "MinPeakDistanceHz", 10, "MakePlots", false}, @(x) iscell(x));
 
 addParameter(parser, "PromptBeforeEachRun", true, @(x) islogical(x) || isnumeric(x));
-addParameter(parser, "CountdownSeconds", 0, @(x) isnumeric(x) && isscalar(x) && x >= 0);
+addParameter(parser, "CountdownSeconds", 0, @(x) isnumeric(x) && isscalar(x) && ...
+    x >= 0 && mod(x, 1) == 0);
 addParameter(parser, "MakeLivePlot", false, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "PlotWindowSeconds", 10, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "PlotUpdateRateHz", 30, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "ModeMatchToleranceHz", 3, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "MinModeOccurrenceFraction", 0.5, ...
+    @(x) isnumeric(x) && isscalar(x) && x > 0 && x <= 1);
 addParameter(parser, "Verbose", true, @(x) islogical(x) || isnumeric(x));
 
 parse(parser, varargin{:});
@@ -73,6 +78,8 @@ countdownSeconds = parser.Results.CountdownSeconds;
 makeLivePlot = logical(parser.Results.MakeLivePlot);
 plotWindowSeconds = parser.Results.PlotWindowSeconds;
 plotUpdateRateHz = parser.Results.PlotUpdateRateHz;
+modeMatchToleranceHz = parser.Results.ModeMatchToleranceHz;
+minModeOccurrenceFraction = parser.Results.MinModeOccurrenceFraction;
 verbose = logical(parser.Results.Verbose);
 
 [quantityIndex, quantityLabel] = parseQuantityOfInterest(direction);
@@ -95,6 +102,8 @@ postProcessingFolder = fullfile(functionsRoot, "PostProcessing");
 if isfolder(postProcessingFolder)
     addpath(postProcessingFolder);
 end
+
+countdownAudio = loadCountdownAudio(functionFolder, countdownSeconds > 0);
 
 if runFFTAnalysis
     fftOptions = ensureNameValueOption(fftOptions, "Direction", defaultAnalysisDirection(quantityIndex));
@@ -174,6 +183,11 @@ batch.durationSeconds = durationSeconds;
 batch.direction = direction;
 batch.accelerometerRangeG = accelerometerRangeG;
 batch.correctionMeans = validationMeanTable;
+batch.countdownAudio = countdownAudio.metadata;
+batch.modeMatchToleranceHz = modeMatchToleranceHz;
+batch.minModeOccurrenceFraction = minModeOccurrenceFraction;
+batch.runFFTAnalysis = runFFTAnalysis;
+batch.analysisDeferred = ~runFFTAnalysis;
 batch.files = strings(N, 1);
 batch.run = repmat(createEmptyRunSummary(), N, 1);
 
@@ -189,14 +203,10 @@ for iRun = 1:N
     end
 
     if countdownSeconds > 0
-        runCountdown(countdownSeconds);
+        runCountdown(countdownSeconds, countdownAudio);
     end
 
-    flush(s);
-    pause(0.05);
-
     runStartedAt = datetime("now", "TimeZone", "local");
-    fprintf("Recording hammer test %d for %.2f s...\n", iRun, durationSeconds);
 
     [T, runMeta] = acquireOneHammerRun( ...
         s, ...
@@ -212,7 +222,8 @@ for iRun = 1:N
         useCorrectedData, ...
         makeLivePlot, ...
         plotWindowSeconds, ...
-        plotUpdateRateHz);
+        plotUpdateRateHz, ...
+        countdownAudio);
 
     runMeta.runIndex = iRun;
     runMeta.runStartedAt = runStartedAt;
@@ -222,7 +233,7 @@ for iRun = 1:N
     fftResults = [];
     analysisError = "";
 
-    if runFFTAnalysis
+    if runFFTAnalysis && runMeta.quality.usableForAnalysis
         try
             fftResults = EstimateEigenfrequencyFFT(T, fftOptions{:});
             freqCells{iRun} = fftResults.freqHz;
@@ -231,18 +242,40 @@ for iRun = 1:N
             analysisError = string(ME.message);
             warning("FFT analysis failed for hammer test %d: %s", iRun, ME.message);
         end
+    elseif runFFTAnalysis
+        analysisError = "Run quality gate failed: " + ...
+            strjoin(runMeta.quality.messages, "; ");
+        warning("RunHammerTestBatch:QualityGateFailed", ...
+            "Skipping FFT analysis for hammer test %d: %s", iRun, analysisError);
     end
 
     runMeta.analysisError = analysisError;
 
     if runMeta.clipping.hasClipping
         warning("RunHammerTestBatch:ClippingDetected", ...
-            "Hammer test %d reached the +/-%.1f g accelerometer range in %d axis samples.", ...
-            iRun, accelerometerRangeG, runMeta.clipping.atLimitSampleCount);
+            ["Hammer test %d reached the +/-%.1f g accelerometer range: " ...
+            "maximum %.4f g on sensor %d, %s-axis (%d full-scale axis samples)."], ...
+            iRun, accelerometerRangeG, runMeta.clipping.maxAbsG, ...
+            runMeta.clipping.peakSensor, runMeta.clipping.peakAxis, ...
+            runMeta.clipping.atLimitSampleCount);
     elseif runMeta.clipping.nearLimit
         warning("RunHammerTestBatch:NearClipping", ...
-            "Hammer test %d came within 95%% of the +/-%.1f g accelerometer range.", ...
-            iRun, accelerometerRangeG);
+            ["Hammer test %d came within 95%% of the +/-%.1f g range: " ...
+            "maximum %.4f g on sensor %d, %s-axis."], ...
+            iRun, accelerometerRangeG, runMeta.clipping.maxAbsG, ...
+            runMeta.clipping.peakSensor, runMeta.clipping.peakAxis);
+    end
+
+    if ~runMeta.quality.usableForAnalysis
+        warning("RunHammerTestBatch:RunNotUsable", ...
+            "Hammer test %d was saved but excluded from analysis: %s", ...
+            iRun, strjoin(runMeta.quality.messages, "; "));
+    end
+
+    if ~isempty(runMeta.quality.warnings)
+        warning("RunHammerTestBatch:RunQualityWarning", ...
+            "Hammer test %d quality warning: %s", ...
+            iRun, strjoin(runMeta.quality.warnings, "; "));
     end
 
     fileName = sprintf("%s_%03d.mat", filePrefix, iRun);
@@ -263,6 +296,18 @@ for iRun = 1:N
     batch.run(iRun).nearClipping = runMeta.clipping.nearLimit;
     batch.run(iRun).maxAbsAccelerationG = runMeta.clipping.maxAbsG;
     batch.run(iRun).atLimitSampleCount = runMeta.clipping.atLimitSampleCount;
+    batch.run(iRun).maxAbsTimeHistoryG = runMeta.timeHistoryPeak.maxAbsG;
+    batch.run(iRun).signedPeakTimeHistoryG = runMeta.timeHistoryPeak.signedPeakG;
+    batch.run(iRun).peakTimeHistorySensor = runMeta.timeHistoryPeak.peakSensor;
+    batch.run(iRun).peakTimeHistorySeconds = runMeta.timeHistoryPeak.peakTimeSeconds;
+    batch.run(iRun).peakTimeHistorySource = runMeta.timeHistoryPeak.selectedSource;
+    batch.run(iRun).usableForAnalysis = runMeta.quality.usableForAnalysis;
+    batch.run(iRun).qualityMessages = runMeta.quality.messages;
+    batch.run(iRun).qualityWarnings = runMeta.quality.warnings;
+    batch.run(iRun).estimatedMissingSamples = runMeta.quality.estimatedMissingSamples;
+    batch.run(iRun).impactPeakG = runMeta.quality.impactPeakG;
+    batch.run(iRun).impactPeakToNoiseRatio = runMeta.quality.impactPeakToNoiseRatio;
+    batch.run(iRun).multipleImpactSuspected = runMeta.quality.multipleImpactSuspected;
 
     if ~isempty(fftResults)
         batch.run(iRun).freqHz = fftResults.freqHz;
@@ -273,8 +318,10 @@ for iRun = 1:N
 end
 
 batch.completedAt = datetime("now", "TimeZone", "local");
-batch.freqMatrixHz = padNumericRows(freqCells);
-batch.zetaMatrix = padNumericRows(zetaCells);
+[batch.freqMatrixHz, batch.zetaMatrix, batch.modeInfo] = ...
+    MatchModalPeaksAcrossRuns(freqCells, zetaCells, ...
+        "ToleranceHz", modeMatchToleranceHz, ...
+        "MinOccurrenceFraction", minModeOccurrenceFraction);
 batch.freqMeanHz = mean(batch.freqMatrixHz, 1, "omitnan");
 batch.freqStdHz = std(batch.freqMatrixHz, 0, 1, "omitnan");
 batch.zetaMean = mean(batch.zetaMatrix, 1, "omitnan");
@@ -282,8 +329,8 @@ batch.zetaStd = std(batch.zetaMatrix, 0, 1, "omitnan");
 
 if saveSummary
     summaryFile = fullfile(outputFolder, "hammer_test_summary.mat");
-    save(summaryFile, "batch");
     batch.summaryFile = string(summaryFile);
+    save(summaryFile, "batch");
     fprintf("Saved hammer-test summary to %s\n", summaryFile);
 end
 
@@ -295,23 +342,30 @@ end
 
 function [T, meta] = acquireOneHammerRun(s, NumSens, NumValsTotal, sampleRate, ...
     durationSeconds, validationMeans, accelerometerRangeG, quantityIndex, quantityLabel, direction, ...
-    useCorrectedData, makeLivePlot, plotWindowSeconds, plotUpdateRateHz)
+    useCorrectedData, makeLivePlot, plotWindowSeconds, plotUpdateRateHz, countdownAudio)
 
 estimatedRows = ceil(durationSeconds * sampleRate * 1.5) + 200;
 data = nan(estimatedRows, NumValsTotal);
 t_matlab = NaT(estimatedRows, 1, "TimeZone", "local");
 
 plotState = setupLivePlot(NumSens, quantityLabel, direction, makeLivePlot);
+plotCleanup = onCleanup(@() closeFigureSafely(plotState.figure));
 
 k = 0;
 t0_arduino_ms = NaN;
 currentValidationSensor = NaN;
-timerObj = tic;
 plotEverySamples = max(1, round(sampleRate / plotUpdateRateHz));
+lastPlottedSample = 0;
 
 if makeLivePlot && isvalid(plotState.figure)
     plotState.axes.XLim = [0, max(durationSeconds, plotWindowSeconds)];
 end
+
+flush(s);
+pause(0.05);
+playSoundSafely(countdownAudio.startSignal, countdownAudio.sampleRate, "start");
+fprintf("Recording now for %.2f s. Hit the structure once.\n", durationSeconds);
+timerObj = tic;
 
 while toc(timerObj) <= durationSeconds
     line = readline(s);
@@ -338,14 +392,23 @@ while toc(timerObj) <= durationSeconds
         t0_arduino_ms = vals(1);
     end
 
-    if makeLivePlot && isvalid(plotState.figure) && mod(k - 1, plotEverySamples) == 0
-        tPlot = (vals(1) - t0_arduino_ms) / 1000;
+    shouldUpdatePlot = mod(k, plotEverySamples) == 0;
+
+    if makeLivePlot && isvalid(plotState.figure) && shouldUpdatePlot
+        plotIndices = (lastPlottedSample + 1):k;
+        plotValues = data(plotIndices, :);
+        elapsedMilliseconds = plotValues(:, 1) - t0_arduino_ms;
+        elapsedMilliseconds(elapsedMilliseconds < 0) = ...
+            elapsedMilliseconds(elapsedMilliseconds < 0) + 2^32 / 1000;
+        tPlot = elapsedMilliseconds / 1000;
 
         for iSens = 1:NumSens
-            yPlot = selectAccelerationValue(vals, iSens, quantityIndex, validationMeans, useCorrectedData);
+            yPlot = selectAccelerationValue( ...
+                plotValues, iSens, quantityIndex, validationMeans, useCorrectedData);
             addpoints(plotState.lines(iSens), tPlot, yPlot);
         end
 
+        lastPlottedSample = k;
         drawnow limitrate
     end
 end
@@ -363,7 +426,7 @@ varNames = buildSensorRigVarNames(NumSens);
 T = array2table(data, "VariableNames", varNames);
 
 T.t_arduino_s = T.t_arduino_ms / 1000;
-T.t_arduino_elapsed_s = (T.t_arduino_ms - T.t_arduino_ms(1)) / 1000;
+T.t_arduino_elapsed_s = unwrapArduinoMilliseconds(T.t_arduino_ms);
 T.t_matlab = t_matlab;
 T.t_matlab_elapsed_s = seconds(T.t_matlab - T.t_matlab(1));
 
@@ -390,6 +453,14 @@ meta.accelerometerRangeG = accelerometerRangeG;
 meta.actualSampleRateArduinoHz = estimateSampleRate(T.t_arduino_elapsed_s);
 meta.actualSampleRateMatlabHz = estimateSampleRate(T.t_matlab_elapsed_s);
 meta.clipping = detectAccelerationClipping(T, NumSens, accelerometerRangeG);
+meta.timeHistoryPeak = SummarizeHammerTimeHistoryPeak(T, ...
+    "NumSensors", NumSens, "Direction", direction);
+meta.quality = AssessHammerRunQuality(T, ...
+    "NumSensors", NumSens, ...
+    "Direction", direction, ...
+    "SampleRate", sampleRate, ...
+    "DurationSeconds", durationSeconds, ...
+    "Clipping", meta.clipping);
 
 end
 
@@ -441,6 +512,18 @@ runSummary.hasClipping = false;
 runSummary.nearClipping = false;
 runSummary.maxAbsAccelerationG = NaN;
 runSummary.atLimitSampleCount = NaN;
+runSummary.maxAbsTimeHistoryG = NaN;
+runSummary.signedPeakTimeHistoryG = NaN;
+runSummary.peakTimeHistorySensor = NaN;
+runSummary.peakTimeHistorySeconds = NaN;
+runSummary.peakTimeHistorySource = "";
+runSummary.usableForAnalysis = false;
+runSummary.qualityMessages = strings(0, 1);
+runSummary.qualityWarnings = strings(0, 1);
+runSummary.estimatedMissingSamples = NaN;
+runSummary.impactPeakG = NaN;
+runSummary.impactPeakToNoiseRatio = NaN;
+runSummary.multipleImpactSuspected = false;
 
 end
 
@@ -505,7 +588,23 @@ clipping.accelerometerRangeG = accelerometerRangeG;
 clipping.nearLimitThresholdG = nearLimitG;
 clipping.atLimitThresholdG = atLimitG;
 clipping.summary = summary;
-clipping.maxAbsG = max(MaxAbsG, [], "omitnan");
+[clipping.maxAbsG, peakRow] = max(MaxAbsG, [], "omitnan");
+
+if isempty(peakRow) || ~isfinite(clipping.maxAbsG)
+    clipping.peakSensor = NaN;
+    clipping.peakAxis = "";
+    clipping.signedPeakG = NaN;
+else
+    clipping.peakSensor = Sensor(peakRow);
+    clipping.peakAxis = Axis(peakRow);
+
+    if abs(MinG(peakRow)) > abs(MaxG(peakRow))
+        clipping.signedPeakG = MinG(peakRow);
+    else
+        clipping.signedPeakG = MaxG(peakRow);
+    end
+end
+
 clipping.nearLimitSampleCount = sum(NearLimitCount);
 clipping.atLimitSampleCount = sum(AtLimitCount);
 clipping.nearLimit = clipping.nearLimitSampleCount > 0;
@@ -575,33 +674,114 @@ end
 
 end
 
-function value = padNumericRows(values)
+function runCountdown(countdownSeconds, countdownAudio)
 
-maxLen = 0;
-
-for i = 1:numel(values)
-    maxLen = max(maxLen, numel(values{i}));
-end
-
-if maxLen == 0
-    value = nan(numel(values), 0);
-    return;
-end
-
-value = nan(numel(values), maxLen);
-
-for i = 1:numel(values)
-    row = values{i};
-    value(i, 1:numel(row)) = row;
-end
-
-end
-
-function runCountdown(countdownSeconds)
+countdownSeconds = floor(countdownSeconds);
 
 for i = countdownSeconds:-1:1
     fprintf("Starting in %d...\n", i);
+
+    if i > 1
+        playSoundSafely( ...
+            countdownAudio.countdownSignal, countdownAudio.sampleRate, "countdown");
+    end
+
     pause(1);
+end
+
+end
+
+function countdownAudio = loadCountdownAudio(functionFolder, shouldLoad)
+
+countdownAudio = struct();
+countdownAudio.countdownSignal = [];
+countdownAudio.startSignal = [];
+countdownAudio.sampleRate = 44100;
+countdownAudio.metadata = struct( ...
+    "enabled", false, ...
+    "countdownFile", "", ...
+    "startFile", "", ...
+    "countdownDurationSeconds", 0, ...
+    "startDurationSeconds", 0);
+
+if ~shouldLoad
+    return;
+end
+
+if exist("mariostart_002.mp3", 'file')
+countdownFile = fullfile(functionFolder, "mariostart_002.mp3");
+startFile = fullfile(functionFolder, "mariostart_008.mp3");
+end
+
+try
+    if exist("mariostart_002.mp3", 'file')
+    [countdownSignal, fsCountdown] = audioread(countdownFile);
+    [startSignal, fsStart] = audioread(startFile);
+    else
+        load gong.mat
+        countdownSignal = y;
+        fsCountdown = Fs;
+        startSignal = y;
+        fsStart = Fs;
+    end
+    if fsCountdown ~= fsStart
+        error("Countdown audio files must use the same sample rate.");
+    end
+
+    countdownAudio.countdownSignal = countdownSignal;
+    countdownAudio.startSignal = startSignal;
+    countdownAudio.sampleRate = fsCountdown;
+    countdownAudio.metadata.enabled = true;
+    countdownAudio.metadata.countdownFile = string(countdownFile);
+    countdownAudio.metadata.startFile = string(startFile);
+    countdownAudio.metadata.countdownDurationSeconds = ...
+        size(countdownSignal, 1) / fsCountdown;
+    countdownAudio.metadata.startDurationSeconds = size(startSignal, 1) / fsStart;
+catch ME
+    warning("RunHammerTestBatch:CountdownAudioUnavailable", ...
+        "Audio countdown is disabled: %s", ME.message);
+end
+
+end
+
+function playSoundSafely(signal, sampleRate, cueName)
+
+if isempty(signal)
+    return;
+end
+
+try
+    sound(signal, sampleRate);
+catch ME
+    warning("RunHammerTestBatch:AudioPlaybackFailed", ...
+        "Could not play the %s cue; continuing silently: %s", cueName, ME.message);
+end
+
+end
+
+function elapsedSeconds = unwrapArduinoMilliseconds(tMilliseconds)
+
+tMilliseconds = double(tMilliseconds(:));
+unwrappedMilliseconds = tMilliseconds;
+wrapMilliseconds = 2^32 / 1000;
+offsetMilliseconds = 0;
+
+for i = 2:numel(tMilliseconds)
+    if tMilliseconds(i) - tMilliseconds(i - 1) < -0.5 * wrapMilliseconds
+        offsetMilliseconds = offsetMilliseconds + wrapMilliseconds;
+    end
+
+    unwrappedMilliseconds(i) = tMilliseconds(i) + offsetMilliseconds;
+end
+
+elapsedSeconds = (unwrappedMilliseconds - unwrappedMilliseconds(1)) / 1000;
+
+end
+
+function closeFigureSafely(fig)
+
+if ~isempty(fig) && all(isgraphics(fig, "figure"))
+    close(fig);
 end
 
 end
@@ -668,7 +848,7 @@ function y = selectAccelerationValue(vals, iSens, quantityIndex, validationMeans
 baseIndex = 2 + (iSens - 1)*4;
 
 if quantityIndex <= 3
-    y = vals(baseIndex + quantityIndex - 1);
+    y = vals(:, baseIndex + quantityIndex - 1);
 
     if useCorrectedData
         offset = validationMeans(iSens, quantityIndex);
@@ -679,18 +859,18 @@ if quantityIndex <= 3
     end
 
 else
-    y = vals(baseIndex + 3);
+    y = vals(:, baseIndex + 3);
 
     if useCorrectedData
         offsets = validationMeans(iSens, 1:3);
 
         if all(isfinite(offsets))
             corrected = [
-                vals(baseIndex) - offsets(1), ...
-                vals(baseIndex + 1) - offsets(2), ...
-                vals(baseIndex + 2) - offsets(3)
+                vals(:, baseIndex) - offsets(1), ...
+                vals(:, baseIndex + 1) - offsets(2), ...
+                vals(:, baseIndex + 2) - offsets(3)
             ];
-            y = sqrt(sum(corrected.^2));
+            y = sqrt(sum(corrected.^2, 2));
         end
     end
 end

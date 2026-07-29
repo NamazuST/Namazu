@@ -28,7 +28,7 @@ campaignId = "HT_26_06_21_Hammer_Test";
 campaignTimestamp = string(datetime("now", "Format", "yyyy-MM-dd-HH-mm-ss"));
 campaignFolderName = campaignId + "_" + campaignTimestamp;
 
-port = "COM10";             % Change if Windows assigns a different ESP32 port.
+port = "COM5";             % Change if Windows assigns a different ESP32 port.
 baud = 1000000;
 numSensors = 5;
 sampleRateHz = 250;        % ESP32 firmware SAMPLE_RATE_HZ.
@@ -40,13 +40,13 @@ numHammerRuns = 5;         % Small test batch. Increase later for the campaign.
 
 runBaseline = true;
 runBatchAnalysis = true;
-showCorrectedBaselineAnimation = false;
-baselineAnimationSpeedup = 5;
 
-fMaxHz = 100;              % Nyquist is 125 Hz for fs = 250 Hz.
+fMaxHz = 90;               % Below the 94 Hz MPU6050 DLPF bandwidth.
 frequencyResolutionHz = 0.1;
-minPeakDistanceHz = 15;
+minPeakDistanceHz = 10;
 relativePeakLevel = 0.03;
+modeMatchToleranceHz = 3;
+minModeOccurrenceFraction = 0.5;
 
 outputRoot = fullfile(matlabRoot, "Experiments", "Hammer-Test");
 campaignFolder = fullfile(outputRoot, campaignFolderName);
@@ -77,11 +77,11 @@ firmwareSettings.ad0Pins = [13, 14, 25, 26, 27];
 firmwareSettings.accelerometerRangeG = 8;
 firmwareSettings.accelerometerScaleLsbPerG = 4096;
 firmwareSettings.mpuAccelConfig = "0x10";
-firmwareSettings.mpuDlpfConfig = 1;
+firmwareSettings.mpuDlpfConfig = 2;
 firmwareSettings.mpuSampleRateDivider = 3;
 firmwareSettings.printMagnitude = true;
 firmwareSettings.settingsFile = ...
-    fullfile(matlabRoot, "Sensors", "sensor_rig_esp32", "FIRMWARE_SETTINGS.md");
+    fullfile(fileparts(matlabRoot), "Sensors", "sensor_rig_esp32", "FIRMWARE_SETTINGS.md");
 
 campaign = struct();
 campaign.id = campaignId;
@@ -96,6 +96,8 @@ campaign.baselineDurationSeconds = baselineDurationSeconds;
 campaign.hammerDurationSeconds = hammerDurationSeconds;
 campaign.numHammerRuns = numHammerRuns;
 campaign.fftOptions = fftOptions;
+campaign.modeMatchToleranceHz = modeMatchToleranceHz;
+campaign.minModeOccurrenceFraction = minModeOccurrenceFraction;
 campaign.firmwareSettings = firmwareSettings;
 
 campaignSettingsFile = fullfile(campaignFolder, "campaign_preflight_settings.mat");
@@ -105,6 +107,8 @@ fprintf("Campaign preflight folder:\n  %s\n", campaignFolder);
 fprintf("Saved campaign settings to:\n  %s\n\n", campaignSettingsFile);
 
 %% -------------------- QUIET BASELINE --------------------
+figuresBeforePreflight = findall(groot, "Type", "figure");
+
 if runBaseline
     baselineFFTResults = [];
 
@@ -142,16 +146,6 @@ if runBaseline
     disp(baselineStats);
     fprintf("Saved baseline summary to:\n  %s\n", baselineStatsFile);
     fprintf("Saved baseline correction offsets to:\n  %s\n", baselineCorrectionFile);
-
-    if showCorrectedBaselineAnimation
-        animateRecordedSensorRigData( ...
-            baselineData, ...
-            numSensors, ...
-            direction, ...
-            true, ...
-            baselineAnimationSpeedup, ...
-            "Baseline-corrected steady-state preview");
-    end
 
     try
         useCorrectedFFT = hasUsableCorrectedChannels(baselineData, numSensors, direction);
@@ -197,6 +191,9 @@ runHammerBatchAnswer = input("Start a small hammer-test batch now? y/n [n]: ", "
 runHammerBatch = strcmpi(strtrim(runHammerBatchAnswer), "y");
 
 if runHammerBatch
+    preflightFigures = findNewFigures(figuresBeforePreflight);
+    closeFiguresSafely(preflightFigures);
+
     fprintf("Starting hammer-test batch with %d runs.\n", numHammerRuns);
 
     hammerBatch = RunHammerTestBatch( ...
@@ -212,18 +209,22 @@ if runHammerBatch
         "OutputRoot", outputRoot, ...
         "FolderName", campaignFolderName, ...
         "FilePrefix", "hammer_test", ...
-        "RunFFTAnalysis", true, ...
+        "RunFFTAnalysis", false, ...
         "FFTOptions", fftOptions, ...
         "CorrectionMeans", baselineCorrectionMeans, ...
         "PromptBeforeEachRun", true, ...
         "CountdownSeconds", 3, ...
-        "MakeLivePlot", true);
+        "MakeLivePlot", true, ...
+        "ModeMatchToleranceHz", modeMatchToleranceHz, ...
+        "MinModeOccurrenceFraction", minModeOccurrenceFraction);
 
     if runBatchAnalysis
         batchSummary = AnalyzeHammerTestBatchFFT( ...
             hammerBatch.outputFolder, ...
             "FFTOptions", fftOptions, ...
-            "NumMeasurementModes", 6);
+            "NumMeasurementModes", 6, ...
+            "ModeMatchToleranceHz", modeMatchToleranceHz, ...
+            "MinModeOccurrenceFraction", minModeOccurrenceFraction);
     end
 
     hammerBatchFile = fullfile(campaignFolder, "hammer_batch_preflight.mat");
@@ -361,89 +362,6 @@ stats = table( ...
 
 end
 
-function animateRecordedSensorRigData(T, numSensors, direction, useCorrected, speedup, figureName)
-
-direction = lower(strtrim(string(direction)));
-quantityIndex = find(["x", "y", "z", "mag"] == direction, 1);
-
-if isempty(quantityIndex)
-    quantityIndex = 2;
-    direction = "y";
-end
-
-if ismember("t_arduino_elapsed_s", T.Properties.VariableNames)
-    t = T.t_arduino_elapsed_s;
-elseif ismember("t_arduino_s", T.Properties.VariableNames)
-    t = T.t_arduino_s - T.t_arduino_s(1);
-else
-    t = (T.t_arduino_ms - T.t_arduino_ms(1)) / 1000;
-end
-
-fig = figure("Name", figureName);
-ax = axes(fig);
-hold(ax, "on");
-grid(ax, "on");
-box(ax, "on");
-
-colors = lines(numSensors);
-linesOut = gobjects(numSensors, 1);
-
-for iSens = 1:numSensors
-    linesOut(iSens) = animatedline(ax, ...
-        "Color", colors(iSens, :), ...
-        "LineWidth", 1.2, ...
-        "DisplayName", sprintf("Sensor %d", iSens));
-end
-
-xlabel(ax, "Arduino elapsed time [s]");
-ylabel(ax, sprintf("%s acceleration [g]", upper(direction)));
-title(ax, figureName, "Interpreter", "none");
-legend(ax, "show", "Location", "best");
-
-if useCorrected
-    suffix = "_corr";
-else
-    suffix = "";
-end
-
-channelData = nan(height(T), numSensors);
-
-for iSens = 1:numSensors
-    if quantityIndex <= 3
-        axisLetter = char(direction);
-        varName = sprintf("S%d_a%s_g%s", iSens, axisLetter, suffix);
-    else
-        varName = sprintf("S%d_mag_g%s", iSens, suffix);
-    end
-
-    if ismember(varName, T.Properties.VariableNames)
-        channelData(:, iSens) = T.(varName);
-    end
-end
-
-if ~any(isfinite(channelData), "all")
-    warning("BaselineAnimation:NoFiniteData", ...
-        "No finite data available for corrected baseline animation.");
-    return;
-end
-
-drawStep = max(1, floor(height(T) / 1500));
-speedup = max(speedup, eps);
-
-for k = 1:drawStep:height(T)
-    for iSens = 1:numSensors
-        addpoints(linesOut(iSens), t(k), channelData(k, iSens));
-    end
-
-    if k > 1
-        pause(max(0, (t(k) - t(max(1, k - drawStep))) / speedup));
-    end
-
-    drawnow limitrate;
-end
-
-end
-
 function isUsable = hasUsableCorrectedChannels(T, numSensors, direction)
 
 direction = char(lower(strtrim(string(direction))));
@@ -476,5 +394,29 @@ for iPeak = 1:numel(results.freqHz)
     fprintf("  Peak %2d: f = %10.5f Hz, sensor = %d\n", ...
         iPeak, results.freqHz(iPeak), results.peakSensor(iPeak));
 end
+
+end
+
+function closeFiguresSafely(figures)
+
+figures = figures(isgraphics(figures, "figure"));
+
+if ~isempty(figures)
+    close(figures);
+end
+
+end
+
+function figures = findNewFigures(previousFigures)
+
+figures = findall(groot, "Type", "figure");
+previousFigures = previousFigures(isgraphics(previousFigures, "figure"));
+keep = true(size(figures));
+
+for iFigure = 1:numel(figures)
+    keep(iFigure) = ~any(figures(iFigure) == previousFigures);
+end
+
+figures = figures(keep);
 
 end

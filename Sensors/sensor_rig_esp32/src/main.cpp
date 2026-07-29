@@ -64,8 +64,10 @@ static constexpr bool PRINT_MAGNITUDE = true;
 // 1 kHz / (1 + 3) = 250 Hz.
 static constexpr uint8_t MPU_SAMPLE_RATE_DIVIDER = 3;
 
-// DLPF config 1 gives high bandwidth for vibration work while filtering noise.
-static constexpr uint8_t MPU_DLPF_CONFIG = 1;
+// DLPF config 2 gives the accelerometer a 94 Hz bandwidth. This keeps the
+// sensor bandwidth below the 125 Hz Nyquist limit of the 250 Hz output stream
+// and avoids aliasing impact energy from the former 184 Hz setting.
+static constexpr uint8_t MPU_DLPF_CONFIG = 2;
 
 // MPU6050 acceleration range options:
 //   +/-2 g  -> ACCEL_CONFIG 0x00, 16384 LSB/g

@@ -9,16 +9,16 @@ function [sensorRigData, validationMeanTable, meta] = TestSensorRigAnimation(qua
 %   t_ms;S1_ax_g,S1_ay_g,S1_az_g,S1_mag_g;S2_ax_g,...
 %
 % Usage:
-%   TestSensorRigAnimation("x", "COM9", 5, 30);
-%   T = TestSensorRigAnimation("x", "COM9", 5, 30);
-%   [T, means] = TestSensorRigAnimation("z", "COM9", 5, 60, ...
+%   TestSensorRigAnimation("x", "COM5", 5, 30);
+%   T = TestSensorRigAnimation("x", "COM5", 5, 30);
+%   [T, means] = TestSensorRigAnimation("z", "COM5", 5, 60, ...
 %       "UseCorrectedData", true);
-%   [T, means, meta] = TestSensorRigAnimation("y", "COM9", 5, 30, ...
+%   [T, means, meta] = TestSensorRigAnimation("y", "COM5", 5, 30, ...
 %       "SaveData", true, "OutputFolder", "Measurements");
-%   [T, means, meta] = TestSensorRigAnimation("y", "COM9", 5, 30, ...
+%   [T, means, meta] = TestSensorRigAnimation("y", "COM5", 5, 30, ...
 %       "RunAnalysis", true);
-%   [T, means, meta] = TestSensorRigAnimation("y", "COM9", 5, 60, ...
-%       "AnalysisOptions", {"FMax", 100, "FrequencyResolutionHz", 0.25});
+%   [T, means, meta] = TestSensorRigAnimation("y", "COM5", 5, 60, ...
+%       "AnalysisOptions", {"FMax", 90, "FrequencyResolutionHz", 0.25});
 %
 % SaveData defaults to true when the function is called without output
 % arguments, and false when the output table is assigned.
@@ -28,7 +28,7 @@ if nargin < 1 || isempty(quantityOfInterest)
 end
 
 if nargin < 2 || isempty(port)
-    port = "COM9";
+    port = "COM5";
 end
 
 if nargin < 3 || isempty(NumSens)
@@ -51,7 +51,7 @@ addParameter(parser, "OutputFolder", pwd, @(x) ischar(x) || isstring(x));
 addParameter(parser, "Verbose", true, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "RunAnalysis", true, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "AnalysisDirection", [], @(x) isempty(x) || ischar(x) || isstring(x));
-addParameter(parser, "AnalysisOptions", {"FMax", 100, "FrequencyResolutionHz", 0.25}, @(x) iscell(x));
+addParameter(parser, "AnalysisOptions", {"FMax", 90, "FrequencyResolutionHz", 0.25}, @(x) iscell(x));
 parse(parser, varargin{:});
 
 baud = parser.Results.Baud;

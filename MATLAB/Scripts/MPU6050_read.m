@@ -80,7 +80,9 @@ eltime = toc;
 data.data1 = data1;
 data.data2 = data2;
 
-SaveAccelerationData(
+% The former incomplete SaveAccelerationData( statement made this legacy
+% exploratory script syntactically invalid. Saving is handled by the current
+% sensor-rig acquisition functions.
 %% filtering
 % load("D:\Wackeltisch\shaking-table\lastMeasurement.mat");
 load("D:\Wackeltisch\shaking-table\lastSim.mat");

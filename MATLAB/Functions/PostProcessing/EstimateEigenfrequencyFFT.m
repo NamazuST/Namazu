@@ -18,7 +18,7 @@ function results = EstimateEigenfrequencyFFT(T, varargin)
 %   results = EstimateEigenfrequencyFFT(T);
 %   results = EstimateEigenfrequencyFFT(T, "Direction", "z", "SampleRate", 250);
 %   results = EstimateEigenfrequencyFFT(T, "Sensors", [1 2 3 4], ...
-%       "FMax", 100, "FrequencyResolutionHz", 0.1, "RelativePeakLevel", 0.03);
+%       "FMax", 90, "FrequencyResolutionHz", 0.1, "RelativePeakLevel", 0.03);
 
 %% -------------------- SETTINGS --------------------
 parser = inputParser;
@@ -33,16 +33,25 @@ addParameter(parser, "Meta", [], @(x) isempty(x) || isstruct(x));
 addParameter(parser, "Gravity", 9.81, @(x) isnumeric(x) && isscalar(x) && x > 0);
 
 addParameter(parser, "FMin", 0.5, @(x) isnumeric(x) && isscalar(x) && x >= 0);
-addParameter(parser, "FMax", 100, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "FMax", 90, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "FrequencyResolutionHz", [], @(x) isempty(x) || ...
     (isnumeric(x) && isscalar(x) && x > 0));
 addParameter(parser, "RelativePeakLevel", 0.03, @(x) isnumeric(x) && isscalar(x) && x >= 0);
-addParameter(parser, "MinPeakDistanceHz", 15, @(x) isnumeric(x) && isscalar(x) && x >= 0);
+addParameter(parser, "MinPeakDistanceHz", 10, @(x) isnumeric(x) && isscalar(x) && x >= 0);
 addParameter(parser, "DeltaFInterp", 5, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "SpectrumWindow", "tukey", @(x) ischar(x) || isstring(x));
+addParameter(parser, "TukeyAlpha", 0.1, ...
+    @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <= 1);
+addParameter(parser, "MinimumInBandToGlobalPeakRatio", 0.05, ...
+    @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <= 1);
 
 addParameter(parser, "DampingSensor", [], @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x > 0));
 addParameter(parser, "DampingStartCycles", 1, @(x) isnumeric(x) && isscalar(x) && x >= 0);
 addParameter(parser, "DampingEndCycles", 30, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "DampingMinFitRSquared", 0.5, ...
+    @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <= 1);
+addParameter(parser, "MaximumDampingRatio", 0.2, ...
+    @(x) isnumeric(x) && isscalar(x) && x > 0);
 
 addParameter(parser, "MakePlots", true, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "OutputFile", "", @(x) ischar(x) || isstring(x));
@@ -68,16 +77,29 @@ frequencyResolutionHz = parser.Results.FrequencyResolutionHz;
 relativePeakLevel = parser.Results.RelativePeakLevel;
 minPeakDistanceHz = parser.Results.MinPeakDistanceHz;
 deltaFInterp = parser.Results.DeltaFInterp;
+spectrumWindowName = lower(strtrim(string(parser.Results.SpectrumWindow)));
+tukeyAlpha = parser.Results.TukeyAlpha;
+minimumInBandToGlobalPeakRatio = parser.Results.MinimumInBandToGlobalPeakRatio;
+
+if ~ismember(spectrumWindowName, ["rectangular", "tukey"])
+    error('SpectrumWindow must be "rectangular" or "tukey".');
+end
 
 dampingSensor = parser.Results.DampingSensor;
 dampingStartCycles = parser.Results.DampingStartCycles;
 dampingEndCycles = parser.Results.DampingEndCycles;
+dampingMinFitRSquared = parser.Results.DampingMinFitRSquared;
+maximumDampingRatio = parser.Results.MaximumDampingRatio;
 
 makePlots = logical(parser.Results.MakePlots);
 outputFile = string(parser.Results.OutputFile);
 
 if dampingEndCycles <= dampingStartCycles
     error("DampingEndCycles must be larger than DampingStartCycles.");
+end
+
+if fmax <= fmin
+    error("FMax must be larger than FMin.");
 end
 
 %% -------------------- CHECK INPUT TABLE --------------------
@@ -189,8 +211,16 @@ end
 df = fs / nFFT;
 
 %% -------------------- FFT AND PEAK PICKING --------------------
-fftFull = fft(accUniform, nFFT);
-fftScaled = fftFull / (nSamples/2);
+if spectrumWindowName == "tukey"
+    spectrumWindow = tukeywin(nSamples, tukeyAlpha);
+else
+    spectrumWindow = ones(nSamples, 1);
+end
+
+accForFFT = accUniform .* spectrumWindow;
+coherentAmplitudeScale = sum(spectrumWindow) / 2;
+fftFull = fft(accForFFT, nFFT);
+fftScaled = fftFull / coherentAmplitudeScale;
 
 nFreq = floor(nFFT/2) + 1;
 freq = (0:nFreq-1).' * df;
@@ -212,6 +242,17 @@ if maxValue <= 0 || isnan(maxValue)
     error("FFT envelope is empty or invalid.");
 end
 
+idxGlobal = freq >= fmin & freq <= fNyquist;
+globalMaxValue = max(envFFT(idxGlobal));
+inBandToGlobalPeakRatio = maxValue / globalMaxValue;
+
+if ~isfinite(inBandToGlobalPeakRatio) || ...
+        inBandToGlobalPeakRatio < minimumInBandToGlobalPeakRatio
+    error("EstimateEigenfrequencyFFT:EnergyOutsideSearchRange", ...
+        "Dominant spectral energy lies outside FMin/FMax: in-band/global peak ratio %.4f is below %.4f.", ...
+        inBandToGlobalPeakRatio, minimumInBandToGlobalPeakRatio);
+end
+
 [pks, locsLocal] = findpeaks( ...
     envSearch, ...
     "MinPeakHeight", relativePeakLevel * maxValue, ...
@@ -227,18 +268,20 @@ peakChannel = nan(1, nPeaks);
 npt = max(1, round(deltaFInterp / df));
 
 for iPeak = 1:nPeaks
-    idxLeft = max(locs(iPeak) - npt, 1);
-    idxRight = min(locs(iPeak) + npt, numel(freq));
+    idxLeft = max(locs(iPeak) - npt, idxSearch(1));
+    idxRight = min(locs(iPeak) + npt, idxSearch(end));
 
     if idxRight <= idxLeft
         freqv(iPeak) = freq(locs(iPeak));
         peakValuesRefined(iPeak) = envFFT(locs(iPeak));
     else
         intFreq = linspace(freq(idxLeft), freq(idxRight), 5000);
-        envInterp = spline(freq(idxLeft:idxRight), envFFT(idxLeft:idxRight), intFreq);
+        envInterp = pchip(freq(idxLeft:idxRight), envFFT(idxLeft:idxRight), intFreq);
         [peakValuesRefined(iPeak), peakIdxInterp] = max(envInterp);
         freqv(iPeak) = intFreq(peakIdxInterp);
     end
+
+    freqv(iPeak) = min(max(freqv(iPeak), fmin), fmax);
 
     peakChannel(iPeak) = envChannelIdx(locs(iPeak));
     peakSensor(iPeak) = sensors(peakChannel(iPeak));
@@ -253,6 +296,8 @@ dampingTime = cell(1, nPeaks);
 dampingSignal = cell(1, nPeaks);
 dampingEnvelope = cell(1, nPeaks);
 dampingEnvelopeFit = cell(1, nPeaks);
+dampingFitRSquared = nan(1, nPeaks);
+dampingFitStatus = repmat("not evaluated", 1, nPeaks);
 
 fftFullDamping = fft(accUniform);
 freqFullDamping = (0:nSamples-1).' * fs / nSamples;
@@ -262,6 +307,7 @@ freqSignedDamping(freqFullDamping > fNyquist) = ...
 
 for iPeak = 1:nPeaks
     if ~isfinite(freqv(iPeak)) || freqv(iPeak) <= 0
+        dampingFitStatus(iPeak) = "invalid modal frequency";
         continue;
     end
 
@@ -303,6 +349,7 @@ for iPeak = 1:nPeaks
 
     minSamples = max(10, round(fs / freqv(iPeak)));
     if idxEnd - idxStart + 1 < minSamples
+        dampingFitStatus(iPeak) = "insufficient decay segment";
         continue;
     end
 
@@ -317,20 +364,50 @@ for iPeak = 1:nPeaks
     validEnv = isfinite(envSegment) & envSegment > 0 & isfinite(tFit);
 
     if nnz(validEnv) < 5
+        dampingFitStatus(iPeak) = "insufficient finite envelope samples";
         continue;
     end
 
     coeff = polyfit(tFit(validEnv), log(envSegment(validEnv)), 1);
-    lambda = max(0, -coeff(1));
     envFit = exp(polyval(coeff, tFit));
-
-    dampingLambda(iPeak) = lambda;
-    zeta(iPeak) = lambda / (2*pi*freqv(iPeak));
 
     dampingTime{iPeak} = tSegment;
     dampingSignal{iPeak} = segment;
     dampingEnvelope{iPeak} = envSegment;
     dampingEnvelopeFit{iPeak} = envFit;
+
+    logEnvelope = log(envSegment(validEnv));
+    logEnvelopeFit = polyval(coeff, tFit(validEnv));
+    residualSumSquares = sum((logEnvelope - logEnvelopeFit).^2);
+    totalSumSquares = sum((logEnvelope - mean(logEnvelope)).^2);
+
+    if totalSumSquares > 0
+        dampingFitRSquared(iPeak) = 1 - residualSumSquares / totalSumSquares;
+    end
+
+    if coeff(1) >= 0
+        dampingFitStatus(iPeak) = "non-decaying envelope";
+        continue;
+    end
+
+    if ~isfinite(dampingFitRSquared(iPeak)) || ...
+            dampingFitRSquared(iPeak) < dampingMinFitRSquared
+        dampingFitStatus(iPeak) = "poor exponential fit";
+        continue;
+    end
+
+    lambda = -coeff(1);
+    zetaCandidate = lambda / (2*pi*freqv(iPeak));
+
+    if ~isfinite(zetaCandidate) || zetaCandidate <= 0 || ...
+            zetaCandidate > maximumDampingRatio
+        dampingFitStatus(iPeak) = "damping ratio outside accepted range";
+        continue;
+    end
+
+    dampingLambda(iPeak) = lambda;
+    zeta(iPeak) = zetaCandidate;
+    dampingFitStatus(iPeak) = "accepted";
 end
 
 %% -------------------- PRINT AND OPTIONAL FILE OUTPUT --------------------
@@ -388,17 +465,21 @@ results.dampingSensor = dampingSensorUsed;
 
 results.time = tUniform;
 results.acceleration = accUniform;
+results.accelerationForFFT = accForFFT;
 results.rms = sqrt(mean(accUniform.^2, 1, "omitnan"));
 
 results.freqAxis = freq;
 results.fft = accFFT;
 results.fftAbs = accFFTAbs;
 results.envFFT = envFFT;
+results.spectrumWindow = spectrumWindow;
 
 results.dampingTime = dampingTime;
 results.dampingSignal = dampingSignal;
 results.dampingEnvelope = dampingEnvelope;
 results.dampingEnvelopeFit = dampingEnvelopeFit;
+results.dampingFitRSquared = dampingFitRSquared;
+results.dampingFitStatus = dampingFitStatus;
 
 results.fs = fs;
 results.dt = dt;
@@ -411,6 +492,10 @@ results.settings.frequencyResolutionHz = frequencyResolutionHz;
 results.settings.relativePeakLevel = relativePeakLevel;
 results.settings.minPeakDistanceHz = minPeakDistanceHz;
 results.settings.deltaFInterp = deltaFInterp;
+results.settings.spectrumWindow = spectrumWindowName;
+results.settings.tukeyAlpha = tukeyAlpha;
+results.settings.minimumInBandToGlobalPeakRatio = minimumInBandToGlobalPeakRatio;
+results.settings.inBandToGlobalPeakRatio = inBandToGlobalPeakRatio;
 results.settings.useCorrectedSignals = useCorrectedSignals;
 results.settings.sampleRateOverride = sampleRateOverride;
 results.settings.useNominalSampleRate = useNominalSampleRate;
@@ -420,6 +505,8 @@ results.settings.nSamples = nSamples;
 results.settings.nFFT = nFFT;
 results.settings.dampingStartCycles = dampingStartCycles;
 results.settings.dampingEndCycles = dampingEndCycles;
+results.settings.dampingMinFitRSquared = dampingMinFitRSquared;
+results.settings.maximumDampingRatio = maximumDampingRatio;
 
 end
 

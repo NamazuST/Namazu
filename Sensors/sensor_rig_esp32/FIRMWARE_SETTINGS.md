@@ -2,7 +2,7 @@
 
 Source of truth: `src/main.cpp`.
 
-Last reviewed against firmware source: 2026-07-27.
+Last reviewed against firmware source: 2026-07-29.
 
 ## Acquisition settings
 
@@ -16,6 +16,8 @@ Last reviewed against firmware source: 2026-07-27.
 | `PRINT_MAGNITUDE` | `true` | Output `ax`, `ay`, `az`, and `|a|` per sensor. |
 
 At `250 Hz`, the time step is `0.004 s` and the Nyquist frequency is `125 Hz`.
+The 94 Hz accelerometer bandwidth is intentionally below Nyquist. The current
+MATLAB hammer-test campaign limits automated peak analysis to 90 Hz.
 
 ## MPU6050 settings
 
@@ -24,7 +26,7 @@ At `250 Hz`, the time step is `0.004 s` and the Nyquist frequency is `125 Hz`.
 | `REG_PWR_MGMT_1` reset | `0x80` | Reset each MPU during initialization. |
 | `REG_PWR_MGMT_1` wake | `0x01` | Wake using the X-gyro PLL clock source. |
 | `MPU_SAMPLE_RATE_DIVIDER` | `3` | With DLPF enabled: `1000 / (1 + 3) = 250 Hz`. |
-| `MPU_DLPF_CONFIG` | `1` | Digital low-pass filter setting, high bandwidth for vibration work. |
+| `MPU_DLPF_CONFIG` | `2` | 94 Hz accelerometer bandwidth for anti-alias protection at 250 Hz output. |
 | `ACCEL_FULL_SCALE_G` | `8` | Accelerometer full-scale range is `+-8 g`. |
 | `MPU_ACCEL_CONFIG` | `0x10` | Register value for `+-8 g`. |
 | `ACCEL_SCALE_LSB_PER_G` | `4096` | Conversion factor for `+-8 g`. |
