@@ -35,6 +35,7 @@ addParameter(parser, "MinModeOccurrenceFraction", 0.5, ...
     @(x) isnumeric(x) && isscalar(x) && x > 0 && x <= 1);
 addParameter(parser, "IncludeFailedQualityRuns", false, ...
     @(x) islogical(x) || isnumeric(x));
+addParameter(parser, "OutputFolder", "", @(x) ischar(x) || isstring(x));
 addParameter(parser, "SaveResultsToFiles", true, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "SaveSummary", true, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "SummaryFileName", "hammer_test_fft_summary.mat", @(x) ischar(x) || isstring(x));
@@ -58,6 +59,7 @@ fMaxSafetyFactor = parser.Results.FMaxSafetyFactor;
 modeMatchToleranceHz = parser.Results.ModeMatchToleranceHz;
 minModeOccurrenceFraction = parser.Results.MinModeOccurrenceFraction;
 includeFailedQualityRuns = logical(parser.Results.IncludeFailedQualityRuns);
+outputFolder = string(parser.Results.OutputFolder);
 saveResultsToFiles = logical(parser.Results.SaveResultsToFiles);
 saveSummary = logical(parser.Results.SaveSummary);
 summaryFileName = string(parser.Results.SummaryFileName);
@@ -71,6 +73,12 @@ verbose = logical(parser.Results.Verbose);
 
 if ~isfolder(batchFolder)
     error("Hammer-test folder does not exist: %s", batchFolder);
+end
+
+if strlength(outputFolder) == 0
+    outputFolder = batchFolder;
+elseif ~isfolder(outputFolder)
+    mkdir(outputFolder);
 end
 
 files = dir(fullfile(batchFolder, filePattern));
@@ -247,6 +255,7 @@ end
 summary = struct();
 summary.method = "Hammer-test batch FFT peak picking";
 summary.batchFolder = batchFolder;
+summary.outputFolder = outputFolder;
 summary.filePattern = filePattern;
 summary.fileRegex = fileRegex;
 summary.createdAt = datetime("now", "TimeZone", "local");
@@ -273,16 +282,16 @@ summary.fftOptions = fftOptions;
 summary.resultsTable = createResultsTable(summary);
 
 if saveTotalResults
-    resultsFile = fullfile(batchFolder, resultsFileName);
+    resultsFile = fullfile(outputFolder, resultsFileName);
     writetable(summary.resultsTable, resultsFile);
     summary.resultsFile = string(resultsFile);
 
-    resultsTextFile = fullfile(batchFolder, resultsTextFileName);
+    resultsTextFile = fullfile(outputFolder, resultsTextFileName);
     writeTextResultsFile(resultsTextFile, summary);
     summary.resultsTextFile = string(resultsTextFile);
 
     if saveMeasurementsFile
-        measurementsFile = fullfile(batchFolder, measurementsFileName);
+        measurementsFile = fullfile(outputFolder, measurementsFileName);
         writeMeasurementsFile(measurementsFile, summary, numMeasurementModes);
         summary.measurementsFile = string(measurementsFile);
         summary.numMeasurementModes = numMeasurementModes;
@@ -299,7 +308,7 @@ if saveTotalResults
 end
 
 if saveSummary
-    summaryFile = fullfile(batchFolder, summaryFileName);
+    summaryFile = fullfile(outputFolder, summaryFileName);
     summary.summaryFile = string(summaryFile);
     save(summaryFile, "summary");
 

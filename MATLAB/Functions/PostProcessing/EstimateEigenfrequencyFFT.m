@@ -19,6 +19,8 @@ function results = EstimateEigenfrequencyFFT(T, varargin)
 %   results = EstimateEigenfrequencyFFT(T, "Direction", "z", "SampleRate", 250);
 %   results = EstimateEigenfrequencyFFT(T, "Sensors", [1 2 3 4], ...
 %       "FMax", 90, "FrequencyResolutionHz", 0.1, "RelativePeakLevel", 0.03);
+%   results = EstimateEigenfrequencyFFT(T, ...
+%       "PeakInterpolationMethod", "spline");
 
 %% -------------------- SETTINGS --------------------
 parser = inputParser;
@@ -39,6 +41,8 @@ addParameter(parser, "FrequencyResolutionHz", [], @(x) isempty(x) || ...
 addParameter(parser, "RelativePeakLevel", 0.03, @(x) isnumeric(x) && isscalar(x) && x >= 0);
 addParameter(parser, "MinPeakDistanceHz", 10, @(x) isnumeric(x) && isscalar(x) && x >= 0);
 addParameter(parser, "DeltaFInterp", 5, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "PeakInterpolationMethod", "pchip", ...
+    @(x) ischar(x) || isstring(x));
 addParameter(parser, "SpectrumWindow", "tukey", @(x) ischar(x) || isstring(x));
 addParameter(parser, "TukeyAlpha", 0.1, ...
     @(x) isnumeric(x) && isscalar(x) && x >= 0 && x <= 1);
@@ -77,12 +81,18 @@ frequencyResolutionHz = parser.Results.FrequencyResolutionHz;
 relativePeakLevel = parser.Results.RelativePeakLevel;
 minPeakDistanceHz = parser.Results.MinPeakDistanceHz;
 deltaFInterp = parser.Results.DeltaFInterp;
+peakInterpolationMethod = lower(strtrim( ...
+    string(parser.Results.PeakInterpolationMethod)));
 spectrumWindowName = lower(strtrim(string(parser.Results.SpectrumWindow)));
 tukeyAlpha = parser.Results.TukeyAlpha;
 minimumInBandToGlobalPeakRatio = parser.Results.MinimumInBandToGlobalPeakRatio;
 
 if ~ismember(spectrumWindowName, ["rectangular", "tukey"])
     error('SpectrumWindow must be "rectangular" or "tukey".');
+end
+
+if ~ismember(peakInterpolationMethod, ["pchip", "spline"])
+    error('PeakInterpolationMethod must be "pchip" or "spline".');
 end
 
 dampingSensor = parser.Results.DampingSensor;
@@ -276,7 +286,11 @@ for iPeak = 1:nPeaks
         peakValuesRefined(iPeak) = envFFT(locs(iPeak));
     else
         intFreq = linspace(freq(idxLeft), freq(idxRight), 5000);
-        envInterp = pchip(freq(idxLeft:idxRight), envFFT(idxLeft:idxRight), intFreq);
+        envInterp = interp1( ...
+            freq(idxLeft:idxRight), ...
+            envFFT(idxLeft:idxRight), ...
+            intFreq, ...
+            peakInterpolationMethod);
         [peakValuesRefined(iPeak), peakIdxInterp] = max(envInterp);
         freqv(iPeak) = intFreq(peakIdxInterp);
     end
@@ -492,6 +506,7 @@ results.settings.frequencyResolutionHz = frequencyResolutionHz;
 results.settings.relativePeakLevel = relativePeakLevel;
 results.settings.minPeakDistanceHz = minPeakDistanceHz;
 results.settings.deltaFInterp = deltaFInterp;
+results.settings.peakInterpolationMethod = peakInterpolationMethod;
 results.settings.spectrumWindow = spectrumWindowName;
 results.settings.tukeyAlpha = tukeyAlpha;
 results.settings.minimumInBandToGlobalPeakRatio = minimumInBandToGlobalPeakRatio;
