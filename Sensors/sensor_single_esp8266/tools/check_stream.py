@@ -139,17 +139,21 @@ def capture(args, check):
     output.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive creation protects earlier experimental data from overwriting.
     with output.open("x", encoding="utf-8", newline="") as destination:
-        with serial.Serial(args.port, 1000000, timeout=0.1, write_timeout=1) as port:
-            # Opening some CP2102 boards resets them; startup auto-streams. On an
-            # already running/paused board this explicitly starts a new segment.
+        with serial.Serial(args.port, args.baud, timeout=0.1, write_timeout=1) as port:
+            # Let a possible USB-open reset reach Serial.begin, then request a
+            # fresh segment. Ignore partial/queued rows until its acknowledgement
+            # so attaching mid-stream cannot manufacture an acquisition gap.
+            time.sleep(1)
+            port.reset_input_buffer()
             port.write(b"start\n")
             lines = Lines()
+            synchronized = False
             startup_deadline = time.monotonic() + 15
             stats_deadline = None
             while True:
                 now = time.monotonic()
                 if check.first_arrival is None and now > startup_deadline:
-                    raise TimeoutError("No samples within 15 s. Check wiring and startup diagnostics.")
+                    raise TimeoutError("No acknowledged stream within 15 s. Check baud, wiring, and firmware.")
                 if check.first_arrival is not None and now - check.first_arrival >= args.seconds and stats_deadline is None:
                     check.stats = None
                     port.write(b"stats\n")
@@ -157,6 +161,11 @@ def capture(args, check):
                 chunk = port.read(min(max(port.in_waiting, 1), 8192))
                 arrival = time.monotonic()
                 for line in lines.feed(chunk):
+                    if not synchronized:
+                        if line != "# Streaming":
+                            continue
+                        synchronized = True
+                        destination.write(HEADER + "\r\n")
                     destination.write(line + "\r\n")
                     check.add(line, arrival)
                 if stats_deadline is not None and (check.stats is not None or arrival >= stats_deadline):
@@ -171,6 +180,7 @@ def main():
     source.add_argument("--port", help="Serial port, e.g. COM9; close MATLAB/serial monitors first")
     source.add_argument("--file", help="Inspect a saved capture; PC delivery timing is unavailable")
     parser.add_argument("--rate", type=int, choices=(1000, 500), default=1000)
+    parser.add_argument("--baud", type=int, default=921600, help="Must match firmware; older builds used 1000000")
     parser.add_argument("--seconds", type=float, default=60)
     parser.add_argument("--output", help="New capture filename; existing files are never overwritten")
     args = parser.parse_args()

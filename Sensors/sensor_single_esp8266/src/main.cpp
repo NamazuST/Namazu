@@ -15,7 +15,7 @@ constexpr uint32_t SAMPLE_RATE_HZ = SENSOR_SAMPLE_RATE_HZ;
 static_assert(SAMPLE_RATE_HZ == 1000 || SAMPLE_RATE_HZ == 500,
               "Use the supported 1000 or 500 Hz build configuration.");
 constexpr uint32_t SAMPLE_INTERVAL_US = 1000000UL / SAMPLE_RATE_HZ;
-constexpr uint32_t SERIAL_BAUD = 1000000;
+constexpr uint32_t SERIAL_BAUD = 921600; // standard rate supported by the classic CP2102
 constexpr uint32_t I2C_CLOCK_HZ = 400000;
 constexpr int SDA_PIN = 4; // NodeMCU D2, not GPIO2
 constexpr int SCL_PIN = 5; // NodeMCU D1, not GPIO1
@@ -113,7 +113,7 @@ void printSettings() {
     Serial.println(F("# NodeMCU ESP8266 single MPU6050 FIFO acceleration rig"));
     Serial.printf("# sensors=1 sample_rate_hz=%lu range_g=16 scale_lsb_per_g=2048\r\n",
                   static_cast<unsigned long>(SAMPLE_RATE_HZ));
-    Serial.println(F("# serial_baud=1000000 SDA=D2/GPIO4 SCL=D1/GPIO5 AD0=GND"));
+    Serial.println(F("# serial_baud=921600 SDA=D2/GPIO4 SCL=D1/GPIO5 AD0=GND"));
     Serial.println(F("# I2C=400000 Hz DLPF=1 nominal_accel_bandwidth=184 Hz WiFi=off"));
     Serial.println(F("# commands: stats, diag, validate, pause, resume, start"));
 }

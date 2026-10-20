@@ -2,7 +2,7 @@
 
 The board photographed on 2026-10-07 is marked **ESP8266MOD**, with a CP2102 USB-to-serial bridge and the NodeMCU pin layout. This project targets that board. It retains the existing MPU6050/GY-521 and NAMAZU serial data structure.
 
-**Default: one three-axis accelerometer, ±16 g per axis, nominal 1,000 samples/s, USB serial at 1,000,000 baud.** Both the default and 500 Hz fallback compile successfully. Sustained delivery, sensor identity, calibration, and frequency response still need testing on the physical assembly; 1 kHz is a target, not a measured reliability claim.
+**Default: one three-axis accelerometer, ±16 g per axis, nominal 1,000 samples/s, USB serial at 921,600 baud.** Both the default and 500 Hz fallback compile successfully. See the bench verification below for delivery measurements; sensor calibration and frequency response still require characterization.
 
 ## Wiring
 
@@ -35,7 +35,7 @@ The INT pin is unnecessary because the firmware polls FIFO occupancy and overflo
 | Nominal output rate | 250 rows/s | **1000 rows/s** |
 | Acceleration filter bandwidth | 94 Hz (DLPF 2) | **184 Hz (DLPF 1)** |
 | Acquisition | Select and read each sensor | Acceleration-only FIFO |
-| USB serial | 1,000,000 baud | Same |
+| USB serial | 1,000,000 baud | **921,600 baud** |
 | Output | Time + five groups | Time + one identical group |
 
 The older `sensor_rig_top_1_fast` sketch used ±4 g and 500 Hz; the table above compares against the current five-sensor ESP32 firmware. Its old GPIO numbers must not be copied to this ESP8266.
@@ -57,20 +57,20 @@ Genuine MPU6050 identity is 0x68. To retain compatibility with modules already a
 
 ## Build and upload
 
-Run from the repository root with PlatformIO installed. Replace `COM9` with the board's actual port. Close MATLAB and any serial monitor before upload or capture.
+Run from the repository root with PlatformIO installed. Replace `COM8` with the board's actual port. Close MATLAB and any serial monitor before upload or capture.
 
 ```powershell
 pio run -d Sensors/sensor_single_esp8266 -e nodemcuv2
-pio run -d Sensors/sensor_single_esp8266 -e nodemcuv2 -t upload --upload-port COM9
+pio run -d Sensors/sensor_single_esp8266 -e nodemcuv2 -t upload --upload-port COM8
 ```
 
 On this workstation, if `pio` is not on PATH, use:
 
 ```powershell
-& 'C:\Users\Mariu\.platformio\penv\Scripts\platformio.exe' run -d Sensors/sensor_single_esp8266 -e nodemcuv2 -t upload --upload-port COM9
+& 'C:\Users\Mariu\.platformio\penv\Scripts\platformio.exe' run -d Sensors/sensor_single_esp8266 -e nodemcuv2 -t upload --upload-port COM8
 ```
 
-Keep the sensor stationary during the approximately four-second startup and validation. At rest its vector magnitude should be near 1 g. Firmware automatically starts streaming afterward. Startup ROM bytes can be unreadable because the ESP8266 boot ROM uses a different baud rate; the application uses 1,000,000 baud, 8N1, CR/LF line endings.
+Keep the sensor stationary during the approximately four-second startup and validation. At rest its vector magnitude should be near 1 g. Firmware automatically starts streaming afterward. Startup ROM bytes can be unreadable because the ESP8266 boot ROM uses a different baud rate; the application uses **921,600 baud, 8N1, CR/LF** line endings. Application text beginning `# NodeMCU` and the validation labels must be readable. Older builds used 1,000,000 baud; change the PC baud together with the firmware.
 
 The conservative fallback selects `-e nodemcuv2_500hz` for both build and upload. It keeps ±16 g and the same columns, but uses 500 samples/s and 2 ms nominal spacing. Use 500 in the PC settings too. Retest delivery and frequency response at that setting.
 
@@ -101,24 +101,28 @@ Counters accumulate until reset, including startup failures. `near_limit` counts
 The existing reader supports one four-value sensor group. Set the number of sensors and rate explicitly; old defaults describe the five-sensor rig.
 
 ```matlab
-LiveSingleSensorFFTMonitor("Port", "COM9", "Baud", 1000000, ...
+LiveSingleSensorFFTMonitor("Port", "COM8", "Baud", 921600, ...
     "NominalSampleRate", 1000, "Direction", "y", "FMax", 100);
 
-batch = RunHammerTestBatch(10, "Port", "COM9", "Baud", 1000000, ...
+batch = RunHammerTestBatch(10, "Port", "COM8", "Baud", 921600, ...
     "NumSensors", 1, "SampleRate", 1000, "AccelerometerRangeG", 16);
 ```
 
-For configurations using `StartExperimentSensorSerial`, set `numberOfAccSensors = 1`, `accelerationSensorBaud = 1000000`, `accelerationSensorSampleRate = 1000`, and the correct `accelerationSensorPort` in the existing configuration object, with `accelerationSensorsActive` enabled. Values are already in g; do not apply the old 4096-count conversion again. Scripts that explicitly require multiple simultaneous response/reference sensors still require those channels; one sensor cannot provide a simultaneous base-versus-structure FRF by itself.
+For configurations using `StartExperimentSensorSerial`, set `numberOfAccSensors = 1`, `accelerationSensorBaud = 921600`, `accelerationSensorSampleRate = 1000`, and the correct `accelerationSensorPort` in the existing configuration object, with `accelerationSensorsActive` enabled. Values are already in g; do not apply the old 4096-count conversion again. Scripts that explicitly require multiple simultaneous response/reference sensors still require those channels; one sensor cannot provide a simultaneous base-versus-structure FRF by itself.
+
+`LiveSingleSensorFFTMonitor` now drains serial bytes in batches, preserves incomplete lines between USB packets, and rejects malformed samples or inconsistent vector magnitudes. Gaps appear as breaks in the acceleration plot; any FFT window containing a gap, fault, or corrupt sample is withheld until the break leaves the window. Missing data are not interpolated. The plot's **timestamp grid** describes nominal sensor timestamps; `state.pcDeliveredSampleRate` separately reports accepted samples per PC second. `state.streamQuality` reports rejected lines, fault markers, gaps, estimated missing samples, and timestamp errors. This validation is not a checksum and cannot detect every possible corruption.
+
+Use `"DurationSeconds", 30` for a bounded test after the first sample arrives. Opening COM8 on the tested board automatically resets it and supplies stationary validation. Keep the board still until `Validation finished.` If validation was missed or unreadable, the monitor warns that correction is unavailable; do not treat raw acceleration as corrected data. A restart during acquisition ends that measurement; run the monitor again. Moving or rotating the board changes measured acceleration, including the projection of gravity, even if the sensor is healthy.
 
 ## Check sustained delivery on the bench
 
 After wiring and flashing, reset the board and run a 60-second check with the sensor stationary, then repeat during representative excitation. Keep only one program connected to the serial port. Install `pyserial` in your chosen Python environment if necessary; the workstation's PlatformIO Python already contains it.
 
 ```powershell
-python Sensors/sensor_single_esp8266/tools/check_stream.py --port COM9 --rate 1000 --seconds 60 --output Sensors/sensor_single_esp8266/captures/bench-1000hz.csv
+python Sensors/sensor_single_esp8266/tools/check_stream.py --port COM8 --baud 921600 --rate 1000 --seconds 60 --output Sensors/sensor_single_esp8266/captures/bench-1000hz.csv
 ```
 
-The capture preserves the serial lines, including diagnostics, and refuses to overwrite an existing file. It checks row structure, actual vector magnitude, nominal timestamp gaps, resets, range warnings, final firmware counters, and both PC- and ESP-measured delivery rates. The rate acceptance window is ±5%, a gross delivery check rather than a timing-accuracy specification. For a clean test, `i2c_errors`, `fifo_overflows`, `backlog_resets`, `faults`, and `near_limit` should all remain zero. Reset before repeating a test to clear earlier faults. Check that `max_fifo_bytes` stays well below the 480-byte backlog threshold.
+The checker requests a fresh stream and begins saving at its `# Streaming` acknowledgement, discarding partial/queued data from before the request. It preserves subsequent serial lines, including diagnostics, and refuses to overwrite an existing file. It checks row structure, actual vector magnitude, nominal timestamp gaps, resets, range warnings, final firmware counters, and both PC- and ESP-measured delivery rates. The rate acceptance window is ±5%, a gross delivery check rather than a timing-accuracy specification. For a clean test, `i2c_errors`, `fifo_overflows`, `backlog_resets`, `faults`, and `near_limit` should all remain zero. Reset before repeating a test to clear earlier faults. Check that `max_fifo_bytes` stays well below the 480-byte backlog threshold.
 
 Offline inspection and host-tool regression tests:
 
@@ -133,8 +137,37 @@ Offline inspection cannot recreate PC arrival timing. A passed delivery check do
 
 Both PlatformIO environments built successfully (29,512 bytes RAM, 276,699 bytes flash each). Cppcheck completed without warnings in the enabled warning/performance/portability categories. All 10 host-tool regression tests passed, covering partial USB lines, corruption, missing samples, invalid values, full-scale values, true vector magnitude, device resets, firmware faults, and nominal-versus-observed rate checks. No board was flashed and no physical acquisition was measured during this implementation.
 
+## Serial repair and bench verification (2026-10-20)
+
+The reported garbled application/validation text was reproduced outside MATLAB at 1,000,000 baud. An eight-second steady-state capture at that baud was clean, so the fault was not present uniformly throughout the stream. After changing the firmware and host to the CP2102's documented standard rate of **921,600 baud**, application startup text was fully readable with zero high-bit bytes. Brief ESP8266 boot-ROM output at its different baud is still expected.
+
+The 1 kHz build was uploaded to the connected NodeMCU on **COM8**, with flash verification. Wiring, ±16 g range, filter settings, and CSV columns were retained. Both 1 kHz and 500 Hz profiles rebuilt successfully.
+
+| Check | Result |
+| --- | --- |
+| 60-second serial capture | 60,086 rows; PC delivery 1,001.42 samples/s |
+| Independent firmware delivery estimate | 1,001.38 samples/s |
+| Invalid/malformed rows, timestamp gaps, magnitude inconsistencies | All zero |
+| I²C errors, FIFO overflows, backlog resets, acquisition faults, near-limit samples | All zero |
+| Maximum FIFO occupancy | 18 bytes, versus the 480-byte fault threshold |
+| MATLAB R2025b live monitor, 20-second acquisition | 20,016 samples; about 1,001.5 accepted samples/s; 27 FFT windows |
+| MATLAB rejected data lines, gaps, fault markers, timestamp errors | All zero; one pre-acquisition fragment discarded |
+| MATLAB startup validation means, g | X = 0.9723, Y = 0.0093, Z = −0.2564, magnitude = 1.0056 |
+| Regression checks | 10 Python tests and 10 MATLAB tests passed; live-monitor Code Analyzer reported no issues |
+
+Local measurements are retained under the ignored `captures/` directory: `startup-921600-20261020-114703.bin`, `bench-921600-20261020-a.csv`, and `matlab-921600-20261020-a.mat`. These results establish delivery for the tested intervals, not guaranteed long-term reliability or calibrated mechanical response. The module reports **WHO_AM_I = 0x72**; genuine MPU6050 identity is 0x68, so its exact bandwidth and absolute sensitivity remain unverified. Repeat the delivery check under the intended excitation and experiment duration.
+
+The MATLAB regression tests can be rerun with:
+
+```matlab
+addpath("MATLAB/Functions/FunTests");
+results = runtests("MATLAB/Functions/FunTests/TestSingleSensorStream.m");
+assertSuccess(results);
+```
+
 ## References
 
+- [Silicon Labs CP2102/CP2109 datasheet](https://www.silabs.com/documents/public/data-sheets/CP2102-9.pdf): documented UART baud-rate settings, including 921,600.
 - [InvenSense MPU-6000/MPU-6050 register map](https://cdn.sparkfun.com/datasheets/Sensors/Accelerometers/RM-MPU-6000A.pdf): sample-rate divider, DLPF, full-scale range, FIFO configuration and byte ordering.
 - [InvenSense product specification](https://cdn.sparkfun.com/datasheets/Components/General%20IC/PS-MPU-6000A.pdf): acceleration range, sensitivity, maximum output rate, I²C and FIFO specifications.
 - [ESP8266 Arduino NodeMCU pin definitions](https://github.com/esp8266/Arduino/blob/master/variants/nodemcu/pins_arduino.h): D1 = GPIO5, D2 = GPIO4.

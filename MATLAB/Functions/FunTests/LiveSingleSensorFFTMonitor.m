@@ -15,6 +15,11 @@ function state = LiveSingleSensorFFTMonitor(varargin)
 %   state = LiveSingleSensorFFTMonitor("FFTWindowSeconds", 12, ...
 %       "FMax", 100, "MaxPeaks", 4);
 %   state = LiveSingleSensorFFTMonitor("SerialTimeout", 2.0);
+%   state = LiveSingleSensorFFTMonitor("Port", "COM8", "Baud", 921600, ...
+%       "NominalSampleRate", 1000, "DurationSeconds", 30);
+% The default baud matches the updated ESP8266 firmware. Older firmware may
+% need an explicit Baud=1000000 until reflashed. Corrupt/gapped windows are
+% withheld from FFT analysis; serial CSV fields remain unchanged.
 %
 % The upper plot shows the maximum absolute acceleration inside the current
 % FFTWindowSeconds window. When the monitor stops, the terminal receives a
@@ -23,12 +28,13 @@ function state = LiveSingleSensorFFTMonitor(varargin)
 parser = inputParser;
 parser.FunctionName = mfilename;
 
-addParameter(parser, "Port", "COM9", @(x) ischar(x) || isstring(x));
-addParameter(parser, "Baud", 1000000, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "Port", "COM8", @(x) ischar(x) || isstring(x));
+addParameter(parser, "Baud", 921600, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "Direction", "y", @(x) ischar(x) || isstring(x));
 addParameter(parser, "UseCorrectedData", true, @(x) islogical(x) || isnumeric(x));
-addParameter(parser, "NominalSampleRate", 500, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "NominalSampleRate", 1000, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "SerialTimeout", 2.0, @(x) isnumeric(x) && isscalar(x) && x > 0);
+addParameter(parser, "DurationSeconds", Inf, @(x) isnumeric(x) && isscalar(x) && x > 0);
 
 addParameter(parser, "PlotWindowSeconds", 10, @(x) isnumeric(x) && isscalar(x) && x > 0);
 addParameter(parser, "FFTWindowSeconds", 10, @(x) isnumeric(x) && isscalar(x) && x > 0);
@@ -53,6 +59,7 @@ direction = lower(strtrim(string(parser.Results.Direction)));
 useCorrectedData = logical(parser.Results.UseCorrectedData);
 nominalSampleRate = parser.Results.NominalSampleRate;
 serialTimeout = parser.Results.SerialTimeout;
+durationSeconds = parser.Results.DurationSeconds;
 
 plotWindowSeconds = parser.Results.PlotWindowSeconds;
 fftWindowSeconds = parser.Results.FFTWindowSeconds;
@@ -67,6 +74,7 @@ fftSettings.relativePeakLevel = parser.Results.RelativePeakLevel;
 fftSettings.minPeakDistanceHz = parser.Results.MinPeakDistanceHz;
 fftSettings.maxPeaks = parser.Results.MaxPeaks;
 fftSettings.minFFTSamples = parser.Results.MinFFTSamples;
+fftSettings.sampleRate = nominalSampleRate;
 fftSettings.dominantFrequencyToleranceHz = parser.Results.DominantFrequencyToleranceHz;
 
 [quantityIndex, quantityLabel, quantityUnitLabel] = parseQuantityOfInterest(direction);
@@ -92,33 +100,12 @@ s.Timeout = serialTimeout;
 cleanupObj = onCleanup(@() cleanupSensorSerial(s));
 
 flush(s);
-pause(1.5);
 
 NumSens = 1;
 NumValsTotal = 1 + NumSens*4;
 validationMeans = nan(NumSens, 4);
 currentValidationSensor = NaN;
-pendingVals = [];
-
 fprintf("Waiting for top-sensor live stream. Press Stop, Esc, or Q to end.\n");
-
-while isempty(pendingVals) && isvalid(ui.figure) && ~getappdata(ui.figure, 'StopRequested')
-    line = readSerialLineNoThrow(s);
-
-    if strlength(line) == 0
-        drawnow limitrate
-        continue;
-    end
-
-    [isData, vals, validationMeans, currentValidationSensor] = ...
-        parseSensorRigLine(line, NumSens, validationMeans, currentValidationSensor, true);
-
-    if isData && numel(vals) == NumValsTotal
-        pendingVals = vals;
-    end
-
-    drawnow limitrate
-end
 
 tBuffer = zeros(0, 1);
 yBuffer = zeros(0, 1);
@@ -132,48 +119,111 @@ globalAccelerationStats = createEmptyAccelerationStats();
 loopTimer = tic;
 dataModeLabel = "raw";
 maxBufferSeconds = max(plotWindowSeconds, fftWindowSeconds) + 5;
+pendingBytes = uint8([]);
+pendingBreak = false;
+lastTimestampMs = NaN;
+firstArrival = NaN;
+lastArrival = NaN;
+stopReason = "User stopped monitor";
+quality = struct('rejectedLines', 0, 'startupRejectedLines', 0, ...
+    'faultRows', 0, 'gaps', 0, 'estimatedMissingSamples', 0, 'timestampErrors', 0);
 
 while isvalid(ui.figure) && ~getappdata(ui.figure, 'StopRequested')
     loopSeconds = toc(loopTimer);
-
-    if ~isempty(pendingVals)
-        vals = pendingVals;
-        pendingVals = [];
-        isData = true;
-    else
-        line = readSerialLineNoThrow(s);
-
-        if strlength(line) == 0
-            drawnow limitrate
+    if isfinite(firstArrival) && loopSeconds - firstArrival >= durationSeconds
+        stopReason = "Requested duration reached";
+        break;
+    end
+    % Drain bytes in batches. Never block waiting for a terminator that could
+    % have been corrupted; retain incomplete lines until the next USB packet.
+    count = min(s.NumBytesAvailable, 65536);
+    lines = cell(0, 1);
+    if count > 0
+        chunk = read(s, count, "uint8");
+        [lines, pendingBytes] = SensorStreamIntegrity.decodeChunk(pendingBytes, chunk);
+    end
+    for iLine = 1:numel(lines)
+        line = string(lines{iLine});
+        [isData, vals, validationMeans, currentValidationSensor, kind] = ...
+            parseSensorRigLine(line, NumSens, validationMeans, currentValidationSensor, false);
+        if kind == "corrupt"
+            if totalSamples == 0
+                quality.startupRejectedLines = quality.startupRejectedLines + 1;
+            else
+                quality.rejectedLines = quality.rejectedLines + 1;
+                pendingBreak = true;
+            end
+            continue;
+        elseif kind == "fault" || startsWith(line, "# STREAM_FAULT")
+            quality.faultRows = quality.faultRows + 1;
+            pendingBreak = totalSamples > 0;
+            continue;
+        elseif ~isData
+            rateToken = regexp(char(line), ...
+                '^# sensors=1 sample_rate_hz=(500|1000) range_g=16 scale_lsb_per_g=2048$', ...
+                'tokens', 'once');
+            if ~isempty(rateToken)
+                nominalSampleRate = str2double(rateToken{1});
+                fftSettings.sampleRate = nominalSampleRate;
+            end
+            if totalSamples > 0 && startsWith(line, "# NodeMCU ESP8266")
+                stopReason = "Device restarted; start a new measurement";
+                setappdata(ui.figure, 'StopRequested', true);
+                break;
+            end
+            if totalSamples == 0 && strlength(line) > 0
+                fprintf('%s\n', line);
+            end
             continue;
         end
-
-        [isData, vals, validationMeans, currentValidationSensor] = ...
-            parseSensorRigLine(line, NumSens, validationMeans, currentValidationSensor, false);
-    end
-
-    if isData && numel(vals) == NumValsTotal
+        if numel(vals) ~= NumValsTotal
+            continue;
+        end
         if isnan(t0ArduinoMs)
             t0ArduinoMs = vals(1);
+            firstArrival = loopSeconds;
+            if useCorrectedData && any(~isfinite(validationMeans(1, 1:3)))
+                warning('LiveSingleSensorFFTMonitor:MissingValidation', ...
+                    'No complete stationary validation received. Showing raw acceleration.');
+            end
         end
-
+        if isfinite(lastTimestampMs)
+            deltaMs = vals(1) - lastTimestampMs;
+            if deltaMs <= 0
+                quality.timestampErrors = quality.timestampErrors + 1;
+                stopReason = "Nonmonotonic sensor time; start a new measurement";
+                setappdata(ui.figure, 'StopRequested', true);
+                break;
+            elseif abs(deltaMs - 1000/nominalSampleRate) > 250/nominalSampleRate
+                quality.gaps = quality.gaps + 1;
+                quality.estimatedMissingSamples = quality.estimatedMissingSamples + ...
+                    max(0, round(deltaMs*nominalSampleRate/1000) - 1);
+                pendingBreak = true;
+            end
+        end
         tSeconds = (vals(1) - t0ArduinoMs) / 1000;
         [yValue, dataModeLabel] = selectAccelerationValue( ...
             vals, quantityIndex, validationMeans, useCorrectedData);
-
         if isfinite(tSeconds) && isfinite(yValue)
+            if pendingBreak
+                tBuffer(end + 1, 1) = tSeconds; %#ok<AGROW>
+                yBuffer(end + 1, 1) = NaN; %#ok<AGROW>
+                pendingBreak = false;
+            end
             tBuffer(end + 1, 1) = tSeconds; %#ok<AGROW>
             yBuffer(end + 1, 1) = yValue; %#ok<AGROW>
             totalSamples = totalSamples + 1;
+            lastTimestampMs = vals(1);
+            lastArrival = loopSeconds;
             globalAccelerationStats = updateGlobalAccelerationStats( ...
                 globalAccelerationStats, tSeconds, yValue);
-
-            keep = tBuffer >= max(0, tSeconds - maxBufferSeconds);
-            tBuffer = tBuffer(keep);
-            yBuffer = yBuffer(keep);
         end
     end
-
+    if ~isempty(tBuffer)
+        keep = tBuffer >= max(0, tBuffer(end) - maxBufferSeconds);
+        tBuffer = tBuffer(keep);
+        yBuffer = yBuffer(keep);
+    end
     if loopSeconds - lastPlotUpdate >= plotUpdateSeconds
         ui = updateAccelerationPlot( ...
             ui, ...
@@ -188,13 +238,21 @@ while isvalid(ui.figure) && ~getappdata(ui.figure, 'StopRequested')
     end
 
     if loopSeconds - lastFFTUpdate >= fftUpdateSeconds
-        lastFFTResult = computeSlidingFFT(tBuffer, yBuffer, fftWindowSeconds, fftSettings);
+        if pendingBreak || (isfinite(lastArrival) && loopSeconds - lastArrival > serialTimeout)
+            lastFFTResult = createEmptyFFTResult();
+            lastFFTResult.status = "FFT withheld: interrupted or stalled serial stream";
+        else
+            lastFFTResult = computeSlidingFFT(tBuffer, yBuffer, fftWindowSeconds, fftSettings);
+        end
         peakHistory = appendPeakHistory(peakHistory, lastFFTResult);
         ui = updateFFTPlot(ui, lastFFTResult, fftWindowSeconds, fftSettings);
         lastFFTUpdate = loopSeconds;
     end
 
     drawnow limitrate
+    if count == 0
+        pause(0.002);
+    end
 end
 
 state = struct();
@@ -208,6 +266,12 @@ state.totalSamples = totalSamples;
 state.stoppedAt = datetime("now", "TimeZone", "local");
 state.lastFFT = lastFFTResult;
 state.validationMeans = validationMeans;
+state.streamQuality = quality;
+state.stopReason = stopReason;
+state.pcDeliveredSampleRate = NaN;
+if totalSamples > 1 && lastArrival > firstArrival
+    state.pcDeliveredSampleRate = (totalSamples - 1) / (lastArrival - firstArrival);
+end
 state.accelerationStats = globalAccelerationStats;
 state.peakHistory = peakHistory;
 state.dominantFrequencies = summarizeDominantFrequencies( ...
@@ -284,30 +348,6 @@ function keyPressStop(fig, event)
 
 if ismember(lower(string(event.Key)), ["escape", "q"])
     setappdata(fig, 'StopRequested', true);
-end
-
-end
-
-function line = readSerialLineNoThrow(s)
-
-try
-    rawLine = readline(s);
-
-    if isempty(rawLine)
-        line = "";
-        return;
-    end
-
-    line = string(rawLine);
-
-    if isempty(line) || ismissing(line(1))
-        line = "";
-        return;
-    end
-
-    line = strtrim(line(1));
-catch
-    line = "";
 end
 
 end
@@ -403,6 +443,7 @@ tMax = tBuffer(end);
 idx = tBuffer >= max(0, tMax - plotWindowSeconds);
 tPlot = tBuffer(idx);
 yPlot = yBuffer(idx);
+[tPlot, yPlot] = SensorStreamIntegrity.breakPlot(tPlot, yPlot, nominalSampleRate);
 
 clearpoints(ui.accelerationLine);
 addpoints(ui.accelerationLine, tPlot, yPlot);
@@ -424,7 +465,7 @@ end
 fsRecent = estimateSampleRate(tPlot);
 
 if isfinite(fsRecent)
-    fsText = sprintf("measured Fs %.1f Hz", fsRecent);
+    fsText = sprintf("timestamp grid %.1f Hz", fsRecent);
 else
     fsText = sprintf("nominal Fs %.1f Hz", nominalSampleRate);
 end
@@ -458,27 +499,18 @@ if isempty(tBuffer)
     return;
 end
 
-tMax = tBuffer(end);
-idx = tBuffer >= max(0, tMax - fftWindowSeconds);
-t = tBuffer(idx);
-y = yBuffer(idx);
-
-validRows = isfinite(t) & isfinite(y);
-t = t(validRows);
-y = y(validRows);
+[t, y, integrityStatus] = SensorStreamIntegrity.fftWindow( ...
+    tBuffer, yBuffer, fftWindowSeconds, settings.sampleRate, settings.minFFTSamples);
 
 if ~isempty(t)
     result.accelerationStats = computeAccelerationStats(t, y);
     result.windowEndTime = t(end);
 end
 
-if numel(t) < settings.minFFTSamples
-    result.status = sprintf("Waiting for at least %d samples", settings.minFFTSamples);
+if strlength(integrityStatus) > 0
+    result.status = integrityStatus;
     return;
 end
-
-[t, uniqueIdx] = unique(t, "stable");
-y = y(uniqueIdx);
 
 dt = median(diff(t));
 
@@ -497,8 +529,8 @@ if fMaxUsed <= settings.fMin
     return;
 end
 
-tUniform = (t(1):dt:t(end)).';
-yUniform = interp1(t, y, tUniform, "linear", "extrap");
+tUniform = t;
+yUniform = y;
 yUniform = yUniform - mean(yUniform, "omitnan");
 nSamples = numel(yUniform);
 
@@ -796,6 +828,11 @@ function printStopSummary(state, fftWindowSeconds, settings)
 fprintf("\nLive FFT monitor summary\n");
 fprintf("  Samples read: %d\n", state.totalSamples);
 fprintf("  FFT windows analyzed: %d\n", state.peakHistory.windowsAnalyzed);
+fprintf("  PC delivery rate: %.1f accepted samples/s\n", state.pcDeliveredSampleRate);
+fprintf("  Stream: %d rejected lines, %d fault markers, %d gaps, ~%d missing samples\n", ...
+    state.streamQuality.rejectedLines, state.streamQuality.faultRows, ...
+    state.streamQuality.gaps, state.streamQuality.estimatedMissingSamples);
+fprintf("  Stop reason: %s\n", state.stopReason);
 
 stats = state.accelerationStats;
 accelerationSymbol = state.accelerationSymbol;
@@ -905,6 +942,11 @@ end
 function ui = updateFFTPlot(ui, result, fftWindowSeconds, settings)
 
 if isempty(result.freq) || isempty(result.fftAbs)
+    set(ui.fftLine, "XData", NaN, "YData", NaN);
+    deleteValidGraphics(ui.peakMarkers);
+    deleteValidGraphics(ui.peakLabels);
+    ui.peakMarkers = gobjects(0);
+    ui.peakLabels = gobjects(0);
     title(ui.fftAxes, result.status, "Interpreter", "none");
     return;
 end
@@ -984,11 +1026,12 @@ end
 
 end
 
-function [isData, vals, validationMeans, currentValidationSensor] = ...
+function [isData, vals, validationMeans, currentValidationSensor, kind] = ...
     parseSensorRigLine(line, NumSens, validationMeans, currentValidationSensor, verbose)
 
 isData = false;
 vals = [];
+kind = "metadata";
 
 line = string(line);
 
@@ -1003,6 +1046,10 @@ if strlength(line) == 0
 end
 
 lineChar = char(line);
+if any(double(lineChar) < 32 | double(lineChar) > 126)
+    kind = "corrupt";
+    return;
+end
 
 sensorToken = regexp(lineChar, '^Sensor\s+(\d+):$', 'tokens', 'once');
 
@@ -1050,17 +1097,11 @@ if ~isnan(currentValidationSensor) && ...
     end
 end
 
-line2 = replace(line, ";", ",");
-tokens = split(line2, ",");
-valsTemp = str2double(tokens).';
-NumValsTotal = 1 + NumSens*4;
-
-if numel(valsTemp) == NumValsTotal && ~isnan(valsTemp(1))
-    vals = valsTemp;
-    isData = true;
-elseif verbose
-    disp("Skipping non-data line: " + line);
+if startsWith(line, "#") || startsWith(line, "t_ms;") || line == "Validation finished."
+    return;
 end
+[vals, kind] = SensorStreamIntegrity.parseSample(lineChar);
+isData = kind == "sample";
 
 end
 
