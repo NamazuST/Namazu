@@ -29,7 +29,7 @@ outputRoot = fullfile(matlabRoot, "Experiments", ...
 
 %% -------------------- HARDWARE --------------------
 numberOfTests = 5;
-motorPort = "COM11";
+motorPort = "COM10";
 sensorPort = "COM5";
 motorBaud = 921600;
 sensorBaud = 1000000;

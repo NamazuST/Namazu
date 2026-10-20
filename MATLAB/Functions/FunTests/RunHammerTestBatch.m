@@ -11,6 +11,10 @@ function batch = RunHammerTestBatch(N, varargin)
 %   batch = RunHammerTestBatch(10, ...
 %       "OutputRoot", "Measurements", ...
 %       "FFTOptions", {"FMax", 90, "FrequencyResolutionHz", 0.1});
+%   batch = RunHammerTestBatch(100, ...
+%       "OutputRoot", "Measurements", ...
+%       "FolderName", "interrupted-campaign", ...
+%       "ResumeExistingRuns", true); % Reuses valid numbered run files.
 
 %% -------------------- SETTINGS --------------------
 if nargin < 1 || isempty(N)
@@ -35,6 +39,7 @@ addParameter(parser, "OutputRoot", pwd, @(x) ischar(x) || isstring(x));
 addParameter(parser, "FolderName", "", @(x) ischar(x) || isstring(x));
 addParameter(parser, "FilePrefix", "hammer_test", @(x) ischar(x) || isstring(x));
 addParameter(parser, "SaveSummary", true, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, "ResumeExistingRuns", false, @(x) islogical(x) || isnumeric(x));
 
 addParameter(parser, "RunFFTAnalysis", true, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, "FFTOptions", {"FMax", 90, "FrequencyResolutionHz", 0.1, ...
@@ -69,6 +74,7 @@ outputRoot = string(parser.Results.OutputRoot);
 folderName = string(parser.Results.FolderName);
 filePrefix = string(parser.Results.FilePrefix);
 saveSummary = logical(parser.Results.SaveSummary);
+resumeExistingRuns = logical(parser.Results.ResumeExistingRuns);
 
 runFFTAnalysis = logical(parser.Results.RunFFTAnalysis);
 fftOptions = parser.Results.FFTOptions;
@@ -190,11 +196,40 @@ batch.runFFTAnalysis = runFFTAnalysis;
 batch.analysisDeferred = ~runFFTAnalysis;
 batch.files = strings(N, 1);
 batch.run = repmat(createEmptyRunSummary(), N, 1);
+batch.resumeExistingRuns = resumeExistingRuns;
+batch.resumedRunCount = 0;
+batch.completedRunCount = 0;
+batch.progressFile = string(fullfile(outputFolder, "hammer_test_progress.mat"));
 
 freqCells = cell(N, 1);
 zetaCells = cell(N, 1);
 
 for iRun = 1:N
+
+    fileName = sprintf("%s_%03d.mat", filePrefix, iRun);
+    filePath = fullfile(outputFolder, fileName);
+
+    if isfile(filePath)
+        if ~resumeExistingRuns
+            error("RunHammerTestBatch:ExistingRunFile", ...
+                ['Run file already exists and will not be overwritten: %s\n' ...
+                'Set ResumeExistingRuns=true only when intentionally resuming this batch.'], ...
+                filePath);
+        end
+
+        [T, runMeta, fftResults] = loadExistingHammerRun(filePath, iRun);
+        analysisError = getRunAnalysisError(runMeta);
+        [batch, freqCells, zetaCells] = recordRunInBatch( ...
+            batch, freqCells, zetaCells, iRun, filePath, T, runMeta, fftResults, analysisError);
+        batch.resumedRunCount = batch.resumedRunCount + 1;
+        batch.completedRunCount = nnz(strlength(batch.files) > 0);
+
+        if verbose
+            fprintf("Reusing saved hammer test %d from %s\n", iRun, filePath);
+        end
+
+        continue;
+    end
 
     fprintf("\nHammer test %d/%d\n", iRun, N);
 
@@ -232,6 +267,8 @@ for iRun = 1:N
 
     fftResults = [];
     analysisError = "";
+    analysisWarningIdentifier = "";
+    analysisWarningMessage = "";
 
     if runFFTAnalysis && runMeta.quality.usableForAnalysis
         try
@@ -240,30 +277,52 @@ for iRun = 1:N
             zetaCells{iRun} = fftResults.zeta;
         catch ME
             analysisError = string(ME.message);
-            warning("FFT analysis failed for hammer test %d: %s", iRun, ME.message);
+            analysisWarningIdentifier = "RunHammerTestBatch:FFTAnalysisFailed";
+            analysisWarningMessage = sprintf( ...
+                "FFT analysis failed for hammer test %d: %s", iRun, ME.message);
         end
     elseif runFFTAnalysis
         analysisError = "Run quality gate failed: " + ...
             strjoin(runMeta.quality.messages, "; ");
-        warning("RunHammerTestBatch:QualityGateFailed", ...
+        analysisWarningIdentifier = "RunHammerTestBatch:QualityGateFailed";
+        analysisWarningMessage = sprintf( ...
             "Skipping FFT analysis for hammer test %d: %s", iRun, analysisError);
     end
 
     runMeta.analysisError = analysisError;
 
+    sensorRigData = T;
+    meta = runMeta;
+    save(filePath, "T", "sensorRigData", "validationMeanTable", "meta", "fftResults");
+    [batch, freqCells, zetaCells] = recordRunInBatch( ...
+        batch, freqCells, zetaCells, iRun, filePath, T, runMeta, fftResults, analysisError);
+    batch.completedRunCount = nnz(strlength(batch.files) > 0);
+    save(batch.progressFile, "batch");
+
+    fprintf("Saved and checkpointed hammer test %d to %s\n", iRun, filePath);
+
+    % Diagnostics are intentionally emitted only after the raw run and the
+    % progress checkpoint are durable. A warning can therefore never discard
+    % an otherwise completed acquisition.
+    if strlength(analysisWarningMessage) > 0
+        warning(analysisWarningIdentifier, "%s", analysisWarningMessage);
+    end
+
     if runMeta.clipping.hasClipping
-        warning("RunHammerTestBatch:ClippingDetected", ...
-            ["Hammer test %d reached the +/-%.1f g accelerometer range: " ...
-            "maximum %.4f g on sensor %d, %s-axis (%d full-scale axis samples)."], ...
+        clippingMessage = sprintf( ...
+            ['Hammer test %d reached the +/-%.1f g accelerometer range: ' ...
+            'maximum %.4f g on sensor %d, %s-axis (%d full-scale axis samples).'], ...
             iRun, accelerometerRangeG, runMeta.clipping.maxAbsG, ...
-            runMeta.clipping.peakSensor, runMeta.clipping.peakAxis, ...
+            runMeta.clipping.peakSensor, char(runMeta.clipping.peakAxis), ...
             runMeta.clipping.atLimitSampleCount);
+        warning("RunHammerTestBatch:ClippingDetected", "%s", clippingMessage);
     elseif runMeta.clipping.nearLimit
-        warning("RunHammerTestBatch:NearClipping", ...
-            ["Hammer test %d came within 95%% of the +/-%.1f g range: " ...
-            "maximum %.4f g on sensor %d, %s-axis."], ...
+        nearLimitMessage = sprintf( ...
+            ['Hammer test %d came within 95%% of the +/-%.1f g range: ' ...
+            'maximum %.4f g on sensor %d, %s-axis.'], ...
             iRun, accelerometerRangeG, runMeta.clipping.maxAbsG, ...
-            runMeta.clipping.peakSensor, runMeta.clipping.peakAxis);
+            runMeta.clipping.peakSensor, char(runMeta.clipping.peakAxis));
+        warning("RunHammerTestBatch:NearClipping", "%s", nearLimitMessage);
     end
 
     if ~runMeta.quality.usableForAnalysis
@@ -277,44 +336,6 @@ for iRun = 1:N
             "Hammer test %d quality warning: %s", ...
             iRun, strjoin(runMeta.quality.warnings, "; "));
     end
-
-    fileName = sprintf("%s_%03d.mat", filePrefix, iRun);
-    filePath = fullfile(outputFolder, fileName);
-
-    sensorRigData = T;
-    meta = runMeta;
-    save(filePath, "T", "sensorRigData", "validationMeanTable", "meta", "fftResults");
-
-    batch.files(iRun) = string(filePath);
-    batch.run(iRun).index = iRun;
-    batch.run(iRun).file = string(filePath);
-    batch.run(iRun).numSamples = height(T);
-    batch.run(iRun).actualSampleRateArduinoHz = runMeta.actualSampleRateArduinoHz;
-    batch.run(iRun).actualSampleRateMatlabHz = runMeta.actualSampleRateMatlabHz;
-    batch.run(iRun).analysisError = analysisError;
-    batch.run(iRun).hasClipping = runMeta.clipping.hasClipping;
-    batch.run(iRun).nearClipping = runMeta.clipping.nearLimit;
-    batch.run(iRun).maxAbsAccelerationG = runMeta.clipping.maxAbsG;
-    batch.run(iRun).atLimitSampleCount = runMeta.clipping.atLimitSampleCount;
-    batch.run(iRun).maxAbsTimeHistoryG = runMeta.timeHistoryPeak.maxAbsG;
-    batch.run(iRun).signedPeakTimeHistoryG = runMeta.timeHistoryPeak.signedPeakG;
-    batch.run(iRun).peakTimeHistorySensor = runMeta.timeHistoryPeak.peakSensor;
-    batch.run(iRun).peakTimeHistorySeconds = runMeta.timeHistoryPeak.peakTimeSeconds;
-    batch.run(iRun).peakTimeHistorySource = runMeta.timeHistoryPeak.selectedSource;
-    batch.run(iRun).usableForAnalysis = runMeta.quality.usableForAnalysis;
-    batch.run(iRun).qualityMessages = runMeta.quality.messages;
-    batch.run(iRun).qualityWarnings = runMeta.quality.warnings;
-    batch.run(iRun).estimatedMissingSamples = runMeta.quality.estimatedMissingSamples;
-    batch.run(iRun).impactPeakG = runMeta.quality.impactPeakG;
-    batch.run(iRun).impactPeakToNoiseRatio = runMeta.quality.impactPeakToNoiseRatio;
-    batch.run(iRun).multipleImpactSuspected = runMeta.quality.multipleImpactSuspected;
-
-    if ~isempty(fftResults)
-        batch.run(iRun).freqHz = fftResults.freqHz;
-        batch.run(iRun).zeta = fftResults.zeta;
-    end
-
-    fprintf("Saved hammer test %d to %s\n", iRun, filePath);
 end
 
 batch.completedAt = datetime("now", "TimeZone", "local");
@@ -527,6 +548,90 @@ runSummary.multipleImpactSuspected = false;
 
 end
 
+function [T, runMeta, fftResults] = loadExistingHammerRun(filePath, expectedIndex)
+
+savedRun = load(filePath, "T", "sensorRigData", "meta", "fftResults");
+
+if isfield(savedRun, "T") && istable(savedRun.T)
+    T = savedRun.T;
+elseif isfield(savedRun, "sensorRigData") && istable(savedRun.sensorRigData)
+    T = savedRun.sensorRigData;
+else
+    error("RunHammerTestBatch:InvalidExistingRun", ...
+        "Existing run %s contains no saved sensor-data table.", filePath);
+end
+
+if ~isfield(savedRun, "meta") || ~isstruct(savedRun.meta)
+    error("RunHammerTestBatch:InvalidExistingRun", ...
+        "Existing run %s contains no valid metadata structure.", filePath);
+end
+
+runMeta = savedRun.meta;
+
+if isfield(runMeta, "runIndex") && isfinite(runMeta.runIndex) && ...
+        runMeta.runIndex ~= expectedIndex
+    error("RunHammerTestBatch:RunIndexMismatch", ...
+        "Existing file %s stores run index %d, expected %d.", ...
+        filePath, runMeta.runIndex, expectedIndex);
+end
+
+if isfield(savedRun, "fftResults")
+    fftResults = savedRun.fftResults;
+else
+    fftResults = [];
+end
+
+end
+
+function analysisError = getRunAnalysisError(runMeta)
+
+if isfield(runMeta, "analysisError")
+    analysisError = string(runMeta.analysisError);
+else
+    analysisError = "";
+end
+
+end
+
+function [batch, freqCells, zetaCells] = recordRunInBatch( ...
+    batch, freqCells, zetaCells, iRun, filePath, T, runMeta, fftResults, analysisError)
+
+batch.files(iRun) = string(filePath);
+batch.run(iRun).index = iRun;
+batch.run(iRun).file = string(filePath);
+batch.run(iRun).numSamples = height(T);
+batch.run(iRun).actualSampleRateArduinoHz = runMeta.actualSampleRateArduinoHz;
+batch.run(iRun).actualSampleRateMatlabHz = runMeta.actualSampleRateMatlabHz;
+batch.run(iRun).analysisError = analysisError;
+batch.run(iRun).hasClipping = runMeta.clipping.hasClipping;
+batch.run(iRun).nearClipping = runMeta.clipping.nearLimit;
+batch.run(iRun).maxAbsAccelerationG = runMeta.clipping.maxAbsG;
+batch.run(iRun).atLimitSampleCount = runMeta.clipping.atLimitSampleCount;
+batch.run(iRun).maxAbsTimeHistoryG = runMeta.timeHistoryPeak.maxAbsG;
+batch.run(iRun).signedPeakTimeHistoryG = runMeta.timeHistoryPeak.signedPeakG;
+batch.run(iRun).peakTimeHistorySensor = runMeta.timeHistoryPeak.peakSensor;
+batch.run(iRun).peakTimeHistorySeconds = runMeta.timeHistoryPeak.peakTimeSeconds;
+batch.run(iRun).peakTimeHistorySource = runMeta.timeHistoryPeak.selectedSource;
+batch.run(iRun).usableForAnalysis = runMeta.quality.usableForAnalysis;
+batch.run(iRun).qualityMessages = runMeta.quality.messages;
+batch.run(iRun).qualityWarnings = runMeta.quality.warnings;
+batch.run(iRun).estimatedMissingSamples = runMeta.quality.estimatedMissingSamples;
+batch.run(iRun).impactPeakG = runMeta.quality.impactPeakG;
+batch.run(iRun).impactPeakToNoiseRatio = runMeta.quality.impactPeakToNoiseRatio;
+batch.run(iRun).multipleImpactSuspected = runMeta.quality.multipleImpactSuspected;
+
+if ~isempty(fftResults) && isfield(fftResults, "freqHz")
+    batch.run(iRun).freqHz = fftResults.freqHz;
+    freqCells{iRun} = fftResults.freqHz;
+
+    if isfield(fftResults, "zeta")
+        batch.run(iRun).zeta = fftResults.zeta;
+        zetaCells{iRun} = fftResults.zeta;
+    end
+end
+
+end
+
 function validationMeanTable = createValidationMeanTable(validationMeans, NumSens)
 
 validationMeanTable = array2table(validationMeans, ...
@@ -708,22 +813,24 @@ if ~shouldLoad
     return;
 end
 
-if exist("mariostart_002.mp3", 'file')
 countdownFile = fullfile(functionFolder, "mariostart_002.mp3");
 startFile = fullfile(functionFolder, "mariostart_008.mp3");
-end
+hasCountdownFiles = isfile(countdownFile) && isfile(startFile);
 
 try
-    if exist("mariostart_002.mp3", 'file')
-    [countdownSignal, fsCountdown] = audioread(countdownFile);
-    [startSignal, fsStart] = audioread(startFile);
+    if hasCountdownFiles
+        [countdownSignal, fsCountdown] = audioread(countdownFile);
+        [startSignal, fsStart] = audioread(startFile);
     else
-        load gong.mat
-        countdownSignal = y;
-        fsCountdown = Fs;
-        startSignal = y;
-        fsStart = Fs;
+        fallbackAudio = load("gong.mat", "y", "Fs");
+        countdownSignal = fallbackAudio.y;
+        fsCountdown = fallbackAudio.Fs;
+        startSignal = fallbackAudio.y;
+        fsStart = fallbackAudio.Fs;
+        countdownFile = "MATLAB gong.mat";
+        startFile = "MATLAB gong.mat";
     end
+
     if fsCountdown ~= fsStart
         error("Countdown audio files must use the same sample rate.");
     end

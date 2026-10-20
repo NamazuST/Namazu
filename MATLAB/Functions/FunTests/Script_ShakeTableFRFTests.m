@@ -29,7 +29,7 @@ outputRoot = fullfile(matlabRoot, "Experiments", ...
 numberOfTests = 5;
 
 % Verify these two assignments in Windows Device Manager before running.
-motorPort = "COM11";
+motorPort = "COM10";
 sensorPort = "COM5";
 
 motorBaud = 921600;

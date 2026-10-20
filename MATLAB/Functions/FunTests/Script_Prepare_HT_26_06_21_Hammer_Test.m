@@ -24,11 +24,11 @@ addpath(genpath(fullfile(matlabRoot, "Functions")));
 addpath(genpath(fullfile(matlabRoot, "Classes")));
 
 %% -------------------- CAMPAIGN SETTINGS --------------------
-campaignId = "HT_26_06_21_Hammer_Test";
+campaignId = "HT_26_08_09_Hammer_Test";
 campaignTimestamp = string(datetime("now", "Format", "yyyy-MM-dd-HH-mm-ss"));
 campaignFolderName = campaignId + "_" + campaignTimestamp;
 
-port = "COM5";             % Change if Windows assigns a different ESP32 port.
+port = "COM8";             % Change if Windows assigns a different ESP32 port.
 baud = 1000000;
 numSensors = 5;
 sampleRateHz = 250;        % ESP32 firmware SAMPLE_RATE_HZ.
@@ -36,7 +36,7 @@ direction = "y";
 
 baselineDurationSeconds = 30;
 hammerDurationSeconds = 12;
-numHammerRuns = 5;         % Small test batch. Increase later for the campaign.
+numHammerRuns = 2;         % Small test batch. Increase later for the campaign.
 
 runBaseline = true;
 runBatchAnalysis = true;
