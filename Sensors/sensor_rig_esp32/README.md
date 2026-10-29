@@ -1,5 +1,10 @@
 # ESP32 MPU6050 sensor rig firmware
 
+For the AZ-Delivery ESP32-WROOM-32 marked **Grüni** in the 2026-10-22 photo,
+use [the dedicated five-sensor FIFO project](../sensor_rig_esp32_grueni/README.md).
+It provides compact left-header wiring and 500/333⅓/250 Hz profiles. Its pin map
+differs from the legacy rig documented below.
+
 This firmware runs the acceleration sensor rig on a classic ESP32 dev board.
 It uses the same serial row format that the MATLAB sensor-rig functions expect:
 
